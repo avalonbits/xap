@@ -1,16 +1,29 @@
 # xap -- a 65C02 assembler for the Commander X16, written in 65C02 assembly.
 #
-# Two host tools are needed, neither of them vendored:
+# Everything needed to build and test is committed under toolchain/, so a fresh
+# clone needs no network and nothing installed. tools/setup-toolchain.sh is
+# what produced it and what reproduces it; the binaries there are Linux
+# x86-64, so on anything else run that script first.
 #
-#   64tass   builds xap, and is the oracle the tests compare its output
-#            against.  apt install 64tass
-#   py65     runs xap's own code on the host, so the tests need no emulator.
-#            pip install py65
+# Any of the four can be pointed elsewhere:
 #
-# Both can be pointed elsewhere:  make test TASS=/path/to/64tass PYTHON=...
+#   make test TASS=/usr/bin/64tass PYTHON=python3.12
+#   make bench X16EMU=~/src/x16-emulator/build/x16emu
 
-TASS   ?= 64tass
+TOOLCHAIN = $(CURDIR)/toolchain
+
+# The committed tool when it is there, otherwise whatever is on PATH -- so
+# this still works for someone who would rather use their own.
+pick = $(if $(wildcard $(1)),$(1),$(2))
+
+TASS   ?= $(call pick,$(TOOLCHAIN)/bin/64tass,64tass)
+X16EMU ?= $(call pick,$(TOOLCHAIN)/bin/x16emu,)
+X16ROM ?= $(call pick,$(TOOLCHAIN)/rom/rom.bin,)
 PYTHON ?= python3
+
+# py65 lives in the toolchain rather than in a virtualenv, which would record
+# absolute paths and not survive being moved or committed.
+PYLIB = $(TOOLCHAIN)/pylib
 
 SRCDIR   = src
 BUILDDIR = build
@@ -27,9 +40,13 @@ PROFILE ?= 4
 
 TASSFLAGS = --mw65c02 -q -Wall -D XAP_PROFILE=$(PROFILE)
 
+# The environment every Python entry point wants.
+PYENV = TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) \
+	PYTHONPATH=$(PYLIB):$(TESTDIR)
+
 # "build" would name both this target and the directory, which makes it its
 # own prerequisite; the binary is the thing worth naming anyway.
-.PHONY: all isa test bench clean
+.PHONY: all isa test bench toolchain clean
 
 all: $(BUILDDIR)/xap.bin $(BUILDDIR)/bench.bin
 
@@ -57,22 +74,19 @@ $(BUILDDIR):
 # changes; the committed table is what the build uses, and test_isa.py fails if
 # the two have drifted apart.
 isa:
-	TASS=$(TASS) $(PYTHON) tools/gen_isa.py -o $(SRCDIR)/isa.inc
-
-# The emulator tests need x16emu and a ROM; they skip themselves without
-# them. Build the emulator from X16Community/x16-emulator and point these at
-# it -- there is no packaged build to depend on.
-X16EMU ?=
-X16ROM ?=
+	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_isa.py -o $(SRCDIR)/isa.inc
 
 test: all
-	TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) \
-		$(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
+	$(PYENV) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
-# Phase by phase cycle costs on the emulator. Needs $X16EMU like the tests.
+# Phase by phase cycle costs on the emulator.
 bench: all
-	TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) MAKE="$(MAKE)" \
-		$(PYTHON) $(TESTDIR)/benchmark.py
+	$(PYENV) MAKE="$(MAKE)" $(PYTHON) $(TESTDIR)/benchmark.py
+
+# Rebuilds toolchain/ from pinned upstream sources. Only needed to move a pin
+# or to port to another architecture.
+toolchain:
+	tools/setup-toolchain.sh --force
 
 clean:
 	rm -rf $(BUILDDIR)
