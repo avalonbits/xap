@@ -13,8 +13,10 @@ ones that happen to be common.
 
 isa_real follows the distribution in corpus/real.json, counted from real code
 by tools/scan_isa.py. That is the right way to know how fast xap will feel,
-because real code is mostly loads, stores, compares and branches and never
-uses eighty of the forms at all.
+because real code is mostly loads, stores, compares and branches. It still
+carries every one of the 212 at least once: real code never uses eighty of
+them, but a corpus that leaves them out stops being able to catch a
+regression in them, and one line each costs half a percent of the file.
 
 Whichever weights are used, the forms are interleaved by position rather than
 emitted in runs, so any prefix of the file has the same mix as the whole. The
@@ -104,14 +106,21 @@ def spell(mnemonic, mode, dialect, **operands):
 
 def generate(order, shapes, size, dialect="xap", origin=0x1000):
     """Lines cycling through order until the text is as close to size as it
-    can get without going over or splitting a line."""
+    can get without going over or splitting a line.
+
+    Returns the text, the line count, the end of the program counter, and
+    which forms actually got used -- the caller checks that last one, because
+    a schedule longer than the file leaves the tail of it unvisited.
+    """
     out = []
+    used = set()
     total = 0
     pc = origin
     i = 0
 
     while True:
-        mnemonic, mode, length = shapes[order[i % len(order)]]
+        key = order[i % len(order)]
+        mnemonic, mode, length = shapes[key]
 
         # Values that vary without changing width. A zero page operand that
         # grew to three digits would be assembled as absolute instead, and a
@@ -126,10 +135,11 @@ def generate(order, shapes, size, dialect="xap", origin=0x1000):
         if total + len(line) > size:
             break
         out.append(line)
+        used.add(key)
         total += len(line)
         i += 1
 
-    return "".join(out), i, pc
+    return "".join(out), i, pc, used
 
 
 def main():
@@ -166,24 +176,43 @@ def main():
         if unknown:
             sys.exit("distribution names forms that do not exist: %s"
                      % ", ".join(sorted(unknown)[:5]))
-        weights = {k: counts.get(k, 0) for k in shapes}
-        label = "%d forms, weighted by %s" % (
-            sum(1 for v in weights.values() if v), data.get("source", "?"))
+        # Floored at one. Every instruction has to appear, or the corpus
+        # cannot catch a regression in the eighty forms real code never uses.
+        weights = {k: max(counts.get(k, 0), 1) for k in shapes}
+        seen = sum(1 for k in shapes if counts.get(k))
+        label = ("%d forms as they appear in real code, %d more once each"
+                 % (seen, len(shapes) - seen))
     else:
         weights = {k: 1 for k in shapes}
         label = "all 212 forms, evenly"
 
+    # The schedule is one entry per weighted occurrence, and the file stops
+    # when it is full. If the schedule is longer than the file has lines, its
+    # tail is never reached and the rarest forms -- the floored ones -- are
+    # exactly what goes missing. So the weights are scaled to the number of
+    # lines that will fit, which a trial run measures.
     order = schedule(weights)
-    text, lines, end = generate(order, shapes, size, args.dialect)
+    text, lines, end, used = generate(order, shapes, size, args.dialect)
+
+    if lines < len(order):
+        scale = lines / len(order)
+        weights = {k: max(int(round(w * scale)), 1) for k, w in weights.items()}
+        order = schedule(weights)
+        text, lines, end, used = generate(order, shapes, size, args.dialect)
+
+    missing = set(shapes) - used
+    if missing:
+        sys.exit("%d instructions did not make it into the corpus: %s"
+                 % (len(missing), ", ".join(sorted(missing)[:6])))
+
     with open(args.output, "w") as fh:
         fh.write(text)
 
-    used = len({order[i % len(order)] for i in range(min(lines, len(order)))})
     print("%s: %d bytes, %d lines, %s%s"
           % (args.output, len(text), lines, label,
              "" if args.dialect == "xap" else " [%s dialect]" % args.dialect))
-    print("  %d distinct instructions used, object code $1000 to $%04X "
-          "(%d bytes)" % (used, end, end - 0x1000))
+    print("  all %d instructions present, object code $1000 to $%04X "
+          "(%d bytes)" % (len(used), end, end - 0x1000))
 
 
 if __name__ == "__main__":
