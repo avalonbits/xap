@@ -37,25 +37,28 @@ import tempfile
 # two a bare mnemonic meant.
 # ---------------------------------------------------------------------------
 
+# The fourth field is the mode to try when the operand does not fit in a byte.
+# The parser always produces the narrow form, because until the value is known
+# it cannot tell "lda $34" from "lda $1234"; widening is where that is settled.
 MODES = [
-    ("impacc", "{m}",           1),   # nop / asl / asl a (see ACC_FORM)
-    ("imm",    "{m} #$12",      2),   # lda #$12
-    ("zp",     "{m} $34",       2),   # lda $34
-    ("zpx",    "{m} $34,x",     2),   # lda $34,x
-    ("zpy",    "{m} $34,y",     2),   # ldx $34,y
-    ("izp",    "{m} ($34)",     2),   # lda ($34)
-    ("izx",    "{m} ($34,x)",   2),   # lda ($34,x)
-    ("izy",    "{m} ($34),y",   2),   # lda ($34),y
-    ("abs",    "{m} $5678",     3),   # lda $5678
-    ("abx",    "{m} $5678,x",   3),   # lda $5678,x
-    ("aby",    "{m} $5678,y",   3),   # lda $5678,y
-    ("iabs",   "{m} ($5678)",   3),   # jmp ($5678)
-    ("iabx",   "{m} ($5678,x)", 3),   # jmp ($5678,x)
-    ("rel",    "{m} *",         2),   # bcc *
-    ("zprel",  None,            3),   # bbr0 $34,*   -- probed specially
+    ("impacc", "{m}",           1, None),    # nop / asl / asl a (see ACC_FORM)
+    ("imm",    "{m} #$12",      2, None),    # lda #$12
+    ("zp",     "{m} $34",       2, "abs"),   # lda $34
+    ("zpx",    "{m} $34,x",     2, "abx"),   # lda $34,x
+    ("zpy",    "{m} $34,y",     2, "aby"),   # ldx $34,y
+    ("izp",    "{m} ($34)",     2, "iabs"),  # lda ($34)
+    ("izx",    "{m} ($34,x)",   2, "iabx"),  # lda ($34,x)
+    ("izy",    "{m} ($34),y",   2, None),    # lda ($34),y -- zero page only
+    ("abs",    "{m} $5678",     3, None),    # lda $5678
+    ("abx",    "{m} $5678,x",   3, None),    # lda $5678,x
+    ("aby",    "{m} $5678,y",   3, None),    # lda $5678,y
+    ("iabs",   "{m} ($5678)",   3, None),    # jmp ($5678)
+    ("iabx",   "{m} ($5678,x)", 3, None),    # jmp ($5678,x)
+    ("rel",    "{m} *",         2, None),    # bcc *
+    ("zprel",  None,            3, None),    # bbr0 $34,*  -- probed specially
 ]
 
-MODE_INDEX = {name: i for i, (name, _, _) in enumerate(MODES)}
+MODE_INDEX = {name: i for i, (name, _, _, _) in enumerate(MODES)}
 MODE_COUNT = 16          # 15 used + 1 spare, so the mask is one word
 
 # Every probe template uses literals, never a symbol. An undefined symbol is a
@@ -158,7 +161,7 @@ def probe(tass):
 
     for m in BASE:
         row = {}
-        for name, template, length in MODES:
+        for name, template, length, _ in MODES:
             if template is None:
                 continue
             if m in IMPLIED_ONLY and name != "impacc":
@@ -301,7 +304,7 @@ def emit(table, out):
     w("\n")
 
     w("XAP_MODE_COUNT = %d\n" % MODE_COUNT)
-    for name, _, _ in MODES:
+    for name, _, _, _ in MODES:
         w("XAP_MODE_%-8s = %d\n" % (name.upper(), MODE_INDEX[name]))
     w("XAP_MODE_NONE = $FF\n")
     w("\n")
@@ -309,13 +312,22 @@ def emit(table, out):
     w("; Bytes emitted per instruction, indexed by mode.\n")
     w("xapModeLength:\n")
     lengths = [0] * MODE_COUNT
-    for name, _, length in MODES:
+    for name, _, length, _ in MODES:
         lengths[MODE_INDEX[name]] = length
     w("        .byte   %s\n\n" % ",".join(str(n) for n in lengths))
 
     # The bit-op families need a digit after the mnemonic; everything else must
     # not have one. The flag lets the parser reject "LDA3" and require "RMB3"
     # without a second table of names.
+    w("; The wider mode to try when the operand does not fit in a byte,\n")
+    w("; XAP_MODE_NONE where there is none.\n")
+    w("xapWiden:\n")
+    wide = [0xFF] * MODE_COUNT
+    for name, _, _, w_name in MODES:
+        if w_name is not None:
+            wide[MODE_INDEX[name]] = MODE_INDEX[w_name]
+    w("        .byte   %s\n\n" % ",".join("$%02x" % b for b in wide))
+
     w("XAP_FLAG_BITOP = $01\n\n")
 
     w("XAP_MNEMONIC_COUNT = %d\n\n" % len(names))
@@ -335,7 +347,7 @@ def emit(table, out):
     w(wrap([m >> 8 for m in masks]))
     w("\n")
 
-    w("xapFlags:\n")
+    w("xapMnemonicFlags:\n")
     w(wrap([1 if n[:3].lower() in BITOPS else 0 for n in names]))
     w("\n")
 

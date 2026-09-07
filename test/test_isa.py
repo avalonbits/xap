@@ -65,7 +65,7 @@ class TestISA(unittest.TestCase):
     def test_modes_are_the_length_they_claim(self):
         """Each mode's declared length is what 64tass actually emits."""
         tass = g.Tass(TASS)
-        for name, template, length in g.MODES:
+        for name, template, length, _ in g.MODES:
             if template is None:
                 continue
             # LDA reaches every mode with an operand; the bare forms are

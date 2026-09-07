@@ -26,6 +26,11 @@ XAP_MODE_NONE = $FF
 xapModeLength:
         .byte   1,2,2,2,2,2,2,2,3,3,3,3,3,2,3,0
 
+; The wider mode to try when the operand does not fit in a byte,
+; XAP_MODE_NONE where there is none.
+xapWiden:
+        .byte   $ff,$ff,$08,$09,$0a,$0b,$0c,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff
+
 XAP_FLAG_BITOP = $01
 
 XAP_MNEMONIC_COUNT = 70
@@ -58,7 +63,7 @@ xapModeMaskHi:
         .byte   $03,$00,$00,$07,$00,$00,$00,$00,$07,$00,$01,$01,$03,$00,$00,$01
         .byte   $01,$00,$00,$00,$00,$00
 
-xapFlags:
+xapMnemonicFlags:
         .byte   $00,$00,$00,$01,$01,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
         .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
         .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01,$00

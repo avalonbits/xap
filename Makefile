@@ -23,13 +23,18 @@ CODEADDR = A000
 
 TASSFLAGS = --mw65c02 -q -Wall
 
-.PHONY: all build isa test clean
+# "build" would name both this target and the directory, which makes it its
+# own prerequisite; the binary is the thing worth naming anyway.
+.PHONY: all isa test clean
 
-all: build
+all: $(BUILDDIR)/xap.bin
 
-build: $(BUILDDIR)/xap.bin
+# Every source, not just the one 64tass is pointed at. Listing only xap.asm
+# meant an edit to encode.asm assembled nothing and tested the previous
+# binary, which is a failure mode that looks exactly like a passing test.
+SOURCES = $(wildcard $(SRCDIR)/*.asm) $(SRCDIR)/isa.inc
 
-$(BUILDDIR)/xap.bin: $(SRCDIR)/xap.asm $(SRCDIR)/isa.inc | $(BUILDDIR)
+$(BUILDDIR)/xap.bin: $(SOURCES) | $(BUILDDIR)
 	$(TASS) $(TASSFLAGS) -b -D CODEADDR=\$$$(CODEADDR) \
 		-o $@ -L $(BUILDDIR)/xap.lst -l $(BUILDDIR)/xap.labels \
 		$(SRCDIR)/xap.asm
@@ -43,7 +48,7 @@ $(BUILDDIR):
 isa:
 	TASS=$(TASS) $(PYTHON) tools/gen_isa.py -o $(SRCDIR)/isa.inc
 
-test: build
+test: all
 	TASS=$(TASS) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
 clean:
