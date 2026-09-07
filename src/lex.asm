@@ -168,6 +168,13 @@ _xfMissing:
 ;
 ;   $ is hex, % is binary, ' is a character, anything else is decimal.
 ;   Values are 16 bit and wrap silently, as they do in the ROM assembler.
+;
+;   Recognising a digit is one indexed load. It used to be a call to a
+;   routine that itself called another, for the sake of two compares --
+;   about forty cycles a digit where this is sixteen, on the hottest loop
+;   in the assembler. One table serves all three bases: a hex digit worth
+;   less than ten is a decimal digit, less than two is a binary one, and
+;   $FF is not a digit at all.
 ; -----------------------------------------------------------------------
 
 xapNumber:
@@ -184,7 +191,9 @@ xapNumber:
 
 ; ---- decimal ----------------------------------------------------------
 
-        jsr     xapDigitValue
+        tax
+        lda     xapHexDigit,x
+        cmp     #10
         bcs     _xnBad              ; a number has to start with a digit
 _xnDecimal:
         jsr     xapMul10
@@ -195,7 +204,9 @@ _xnDecimal:
         inc     xapValue+1
 +       iny
         lda     (xapSrc),y
-        jsr     xapDigitValue
+        tax
+        lda     xapHexDigit,x
+        cmp     #10
         bcc     _xnDecimal
         clc
         rts
@@ -205,8 +216,10 @@ _xnDecimal:
 _xnHex:
         iny
         lda     (xapSrc),y
-        jsr     xapHexValue
-        bcs     _xnBad
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        beq     _xnBad
 _xnHexLoop:
         asl     xapValue            ; a nibble at a time
         rol     xapValue+1
@@ -220,8 +233,10 @@ _xnHexLoop:
         sta     xapValue
         iny
         lda     (xapSrc),y
-        jsr     xapHexValue
-        bcc     _xnHexLoop
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        bne     _xnHexLoop
         clc
         rts
 
@@ -230,7 +245,9 @@ _xnHexLoop:
 _xnBinary:
         iny
         lda     (xapSrc),y
-        jsr     xapBitValue
+        tax
+        lda     xapHexDigit,x
+        cmp     #2
         bcs     _xnBad
 _xnBinLoop:
         asl     xapValue
@@ -239,16 +256,17 @@ _xnBinLoop:
         sta     xapValue
         iny
         lda     (xapSrc),y
-        jsr     xapBitValue
+        tax
+        lda     xapHexDigit,x
+        cmp     #2
         bcc     _xnBinLoop
         clc
         rts
 
 ; ---- character --------------------------------------------------------
 ;
-;   'a' is the code of the character between the quotes. The closing quote
-;   is required, so a stray quote is an error rather than the start of
-;   something that swallows the rest of the line.
+;   The closing quote is required, so a stray one is an error rather than
+;   the start of something that swallows the rest of the line.
 
 _xnChar:
         iny
@@ -269,7 +287,7 @@ _xnBad:
         rts
 
 ; -----------------------------------------------------------------------
-;   xapValue = xapValue * 10, leaving the running total in A's caller.
+;   xapValue = xapValue * 10, leaving A alone for the caller's digit.
 ;
 ;   Ten is eight plus two, so it is two shifted copies added, which is
 ;   cheaper than a multiply routine and is the only multiply xap needs
@@ -302,53 +320,6 @@ xapMul10:
         rts
 
 ; -----------------------------------------------------------------------
-;   Character classes. Each returns CC with the value in A, or CS.
-; -----------------------------------------------------------------------
-
-xapDigitValue:
-        cmp     #'0'
-        bcc     _xdvNo
-        cmp     #'9'+1
-        bcs     _xdvNo
-        sec
-        sbc     #'0'
-        clc
-        rts
-_xdvNo:
-        sec
-        rts
-
-xapBitValue:
-        cmp     #'0'
-        bcc     _xbvNo
-        cmp     #'2'
-        bcs     _xbvNo
-        sec
-        sbc     #'0'
-        clc
-        rts
-_xbvNo:
-        sec
-        rts
-
-xapHexValue:
-        jsr     xapDigitValue
-        bcc     _xhvDone
-        jsr     xapUpper
-        cmp     #'A'
-        bcc     _xhvNo
-        cmp     #'F'+1
-        bcs     _xhvNo
-        sec
-        sbc     #'A'-10
-        clc
-_xhvDone:
-        rts
-_xhvNo:
-        sec
-        rts
-
-; -----------------------------------------------------------------------
 ;   Folds a letter to upper case, leaving anything else alone.
 ;
 ;   Clearing bit 5 would turn punctuation into control codes, so the fold
@@ -366,17 +337,15 @@ _xuDone:
 
 ; -----------------------------------------------------------------------
 ;   CS when A could continue an identifier: a letter or a digit.
+;
+;   Two nested calls became one indexed load.
 ; -----------------------------------------------------------------------
 
 xapIsIdent:
-        jsr     xapDigitValue
-        bcc     _xiiYes
-        jsr     xapUpper
-        cmp     #'A'
-        bcc     _xiiNo
-        cmp     #'Z'+1
-        bcs     _xiiNo
-_xiiYes:
+        tax
+        lda     xapClass,x
+        and     #XAP_CLASS_IDENT
+        beq     _xiiNo
         sec
         rts
 _xiiNo:

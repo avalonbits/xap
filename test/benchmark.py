@@ -51,44 +51,16 @@ STAGES = [
     (4, "+ encode and emit"),
 ]
 
-# A mix rather than one instruction repeated, so the profile is not the cost of
-# whichever form happens to be cheapest. Roughly the shape of hand-written 6502:
-# mostly loads, stores and branches, with the odd indirect.
-#
-# The length is carried alongside because a branch has to reach its target, and
-# with no labels yet the only way to write one is an absolute address -- so the
-# generator tracks the program counter and points each branch at the
-# instruction after it.
-SAMPLE = [
-    ("    lda #$12", 2),
-    ("    sta $34", 2),
-    ("    ldx $5678", 3),
-    ("    inx", 1),
-    ("    cmp $34,x", 2),
-    ("    bne ${target:04x}", 2),
-    ("    lda ($20),y", 2),
-    ("    jsr $c000", 3),
-    ("    asl a", 1),
-    ("    ldy #$00", 2),
-    ("    sty $04,x", 2),
-    ("    pha", 1),
-    ("    and #%00001111", 2),
-    ("    ora $12", 2),
-    ("    plp", 1),
-    ("    jmp ($fffc)", 3),
-]
+def corpus(path):
+    """A benchmark corpus, built by tools/gen_corpus.py.
 
-
-def corpus(lines, origin=0x1000):
-    """A source of the given number of lines, cycling through the sample."""
-    out = []
-    pc = origin
-    for i in range(lines):
-        text, length = SAMPLE[i % len(SAMPLE)]
-        pc += length
-        out.append(text.format(target=pc) + "\n")
-
-    return "".join(out)
+    Two of them, and they answer different questions. isa_even weights all 212
+    instructions alike, so no mnemonic and no addressing mode can hide behind
+    the common ones. isa_real follows the distribution counted from real code,
+    so it says how fast xap will actually feel.
+    """
+    with open(path) as fh:
+        return fh.read()
 
 
 def build(stage):
@@ -134,45 +106,58 @@ def measure(code, sym, source):
         shutil.rmtree(fsroot, ignore_errors=True)
 
 
+def report(paths):
+    """Builds each stage once and measures every corpus with it.
+
+    The build is the slow part, so the loop is stages outside and corpora
+    inside rather than the other way round.
+    """
+    sources = [(os.path.basename(p).replace(".asm", ""), corpus(p))
+               for p in paths]
+    measured = {name: [] for name, _ in sources}
+
+    for stage, label in STAGES:
+        code, sym = build(stage)
+        overhead = measure(code, sym, "")        # opens and closes, no work
+        for name, source in sources:
+            measured[name].append(
+                (label, measure(code, sym, source) - overhead, overhead))
+
+    for name, source in sources:
+        size = len(source)
+        rows = measured[name]
+
+        print("\nxap phase profile -- %s" % name)
+        print("  %d lines, %d bytes\n" % (source.count("\n"), size))
+        print("  %-34s %10s %10s %8s %7s"
+              % ("phase", "cycles", "of which", "cyc/byte", "share"))
+        print("  %-34s %10s %10s %8s %7s"
+              % ("", "cumulative", "this phase", "", ""))
+        print("  " + "-" * 73)
+
+        net = rows[-1][1]
+        previous = 0
+        for label, cycles, _ in rows:
+            delta = cycles - previous
+            print("  %-34s %10d %10d %8.1f %6.1f%%"
+                  % (label, cycles, delta, delta / size,
+                     100.0 * delta / net))
+            previous = cycles
+
+        print("  " + "-" * 73)
+        print("  %-34s %10d %10s %8.1f %6.1f%%"
+              % ("total, assembling", net, "", net / size, 100.0))
+        print("  %-34s %10d" % ("fixed cost, opening and closing", rows[-1][2]))
+        print("\n  %.1f cycles/byte -- %.3fs for %d bytes on an 8MHz X16"
+              % (net / size, net / 8e6, size))
+
+
 def main():
     if not X16EMU or not os.path.exists(X16EMU):
         sys.exit("set X16EMU to a built x16emu")
 
-    lines = int(os.environ.get("BENCH_LINES", "4000"))
-    source = corpus(lines)
-    size = len(source)
-
-    print("xap phase profile")
-    print("  %d lines, %d bytes of source\n" % (lines, size))
-
-    rows = []
-    for stage, name in STAGES:
-        code, sym = build(stage)
-        overhead = measure(code, sym, "")        # opens and closes, no work
-        total = measure(code, sym, source)
-        rows.append((stage, name, total - overhead, overhead, total))
-
-    print("  %-34s %10s %10s %8s %7s"
-          % ("phase", "cycles", "of which", "cyc/byte", "share"))
-    print("  %-34s %10s %10s %8s %7s"
-          % ("", "cumulative", "this phase", "", ""))
-    print("  " + "-" * 73)
-
-    net = rows[-1][2]
-    previous = 0
-    for stage, name, cycles, overhead, total in rows:
-        delta = cycles - previous
-        print("  %-34s %10d %10d %8.1f %6.1f%%"
-              % (name, cycles, delta, delta / size, 100.0 * delta / net))
-        previous = cycles
-
-    print("  " + "-" * 73)
-    print("  %-34s %10d %10s %8.1f %6.1f%%"
-          % ("total, assembling", net, "", net / size, 100.0))
-    print("  %-34s %10d" % ("fixed cost, opening and closing", rows[-1][3]))
-    print()
-    print("  %.1f cycles/byte -- %.3fs for %d bytes on an 8MHz X16"
-          % (net / size, net / 8e6, size))
+    paths = sys.argv[1:] or [os.path.join(ROOT, "build", "isa_even.asm")]
+    report(paths)
 
 
 if __name__ == "__main__":

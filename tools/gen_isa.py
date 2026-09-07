@@ -58,6 +58,28 @@ MODES = [
     ("zprel",  None,            3, None),    # bbr0 $34,*  -- probed specially
 ]
 
+# How each mode is written for xap. These differ from the probe templates in
+# two places: xap has no "*" for the program counter yet, so a branch needs a
+# literal target, and xap attaches the digit of the Rockwell bit instructions
+# to the mnemonic. {target} is filled in by whoever knows the program counter.
+XAP_TEMPLATE = {
+    "impacc": "{m}",
+    "imm":    "{m} #${b:02x}",
+    "zp":     "{m} ${b:02x}",
+    "zpx":    "{m} ${b:02x},x",
+    "zpy":    "{m} ${b:02x},y",
+    "izp":    "{m} (${b:02x})",
+    "izx":    "{m} (${b:02x},x)",
+    "izy":    "{m} (${b:02x}),y",
+    "abs":    "{m} ${w:04x}",
+    "abx":    "{m} ${w:04x},x",
+    "aby":    "{m} ${w:04x},y",
+    "iabs":   "{m} (${w:04x})",
+    "iabx":   "{m} (${w:04x},x)",
+    "rel":    "{m} ${target:04x}",
+    "zprel":  "{m} ${b:02x},${target:04x}",
+}
+
 MODE_INDEX = {name: i for i, (name, _, _, _) in enumerate(MODES)}
 MODE_COUNT = 16          # 15 used + 1 spare, so the mask is one word
 
@@ -391,6 +413,52 @@ def emit(table, out):
     w(wrap([c >> 3 for c in range(27)]))
     w("xapLetter2Lo:\n")
     w(wrap([(c << 5) & 0xFF for c in range(27)]))
+    w("\n")
+
+    # Testing whether a mnemonic has a mode was a loop that shifted the mask
+    # right once per mode number -- up to 120 cycles, several times a line.
+    # One bit per entry turns that into two ANDs.
+    w("; The bit each mode occupies in a mode mask.\n")
+    w("xapModeBitLo:\n")
+    w(wrap([(1 << m) & 0xFF for m in range(MODE_COUNT)]))
+    w("xapModeBitHi:\n")
+    w(wrap([(1 << m) >> 8 for m in range(MODE_COUNT)]))
+    w("\n")
+
+    # Hex digit value, and decimal by the same table since a decimal digit is
+    # just one worth less than ten. Both were subroutines that cost more in
+    # call and return than in the compare they did.
+    w("; Hex digit value, $FF if it is not one. A decimal digit is an\n")
+    w("; entry below ten.\n")
+    w("XAP_NOT_DIGIT = $FF\n")
+    w("xapHexDigit:\n")
+    digits = [0xFF] * 256
+    for i in range(10):
+        digits[ord('0') + i] = i
+    for i in range(6):
+        digits[ord('A') + i] = 10 + i
+        digits[ord('a') + i] = 10 + i
+    w(wrap(digits))
+    w("\n")
+
+    # The character classes the line parser asks about, so that "does this end
+    # the line" is one load and one AND rather than four compares in a
+    # subroutine.
+    w("XAP_CLASS_SPACE = $01           ; space or tab\n")
+    w("XAP_CLASS_EOL   = $02           ; NUL, newline, or a comment\n")
+    w("XAP_CLASS_IDENT = $04           ; letter or digit\n")
+    w("xapClass:\n")
+    klass = [0] * 256
+    for c in (ord(' '), 9):
+        klass[c] |= 0x01
+    for c in (0, 10, 13, ord(';')):
+        klass[c] |= 0x02
+    for i in range(26):
+        klass[ord('A') + i] |= 0x04
+        klass[ord('a') + i] |= 0x04
+    for i in range(10):
+        klass[ord('0') + i] |= 0x04
+    w(wrap(klass))
     w("\n")
 
     average, shift, slots = find_hash(names)

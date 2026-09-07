@@ -151,6 +151,23 @@ class TestOnHardware(unittest.TestCase):
             got, _ = self.assemble(source)
             self.assertEqual(got, self.tass(source), "pad=%d" % pad)
 
+    def test_a_corpus_of_every_instruction_through_a_file(self):
+        """The benchmark corpus, assembled on the machine, against 64tass.
+
+        The encoding tests cover all 212 forms one line at a time in memory.
+        This runs them as one file through the KERNAL -- many refills, many
+        object flushes -- which is where a streaming bug would show and an
+        encoding test never would.
+        """
+        path = os.path.join(ROOT, "build", "isa_even.asm")
+        if not os.path.exists(path):
+            self.skipTest("build/isa_even.asm is missing -- run make")
+        with open(path) as fh:
+            source = "".join(fh.readlines()[:4000])
+
+        got, _ = self.assemble(source)
+        self.assertEqual(got, self.tass(source))
+
     def test_the_last_line_need_not_be_terminated(self):
         got, _ = self.assemble("nop\nlda #$12")
         self.assertEqual(got, bytes([0xEA, 0xA9, 0x12]))

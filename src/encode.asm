@@ -65,25 +65,25 @@ _xslTake:
 ; -----------------------------------------------------------------------
 ;   CS when the mnemonic accepts the mode in X. X is preserved, because
 ;   every caller goes on to store it.
+;
+;   This used to shift a copy of the mask right once per mode number, so
+;   asking about absolute cost eight iterations and asking about the
+;   highest mode fourteen -- 140 cycles a call, several times a line, to
+;   read one bit. The bit is now tabulated.
 ; -----------------------------------------------------------------------
 
 xapHasMode:
-        phx
-        lda     xapMask
-        sta     xapKey
-        lda     xapMask+1
-        sta     xapKey+1
-        cpx     #0
-        beq     _xhmTest
-_xhmShift:
-        lsr     xapKey+1
-        ror     xapKey
-        dex
-        bne     _xhmShift
-_xhmTest:
-        lda     xapKey
-        lsr     a                   ; the mode's bit into carry
-        plx                         ; which PLX does not disturb
+        lda     xapModeBitLo,x
+        and     xapMask
+        bne     _xhmYes
+        lda     xapModeBitHi,x
+        and     xapMask+1
+        beq     _xhmNo
+_xhmYes:
+        sec
+        rts
+_xhmNo:
+        clc
         rts
 
 ; -----------------------------------------------------------------------
@@ -104,7 +104,7 @@ _xenBit:
         dex
         bne     _xenBit
 _xenOpcode:
-        jsr     xapPut
+        .put
 
         ldx     xapMode
         cpx     #XAP_MODE_REL
@@ -116,12 +116,12 @@ _xenOpcode:
         cmp     #1
         beq     _xenAdvance
         lda     xapValue
-        jsr     xapPut
+        .put
         lda     xapModeLength,x
         cmp     #3
         bne     _xenAdvance
         lda     xapValue+1
-        jsr     xapPut
+        .put
         bra     _xenAdvance
 
 _xenRelative:
@@ -132,7 +132,7 @@ _xenRelative:
         lda     #2
         jsr     xapOffset
         bcs     _xenFail
-        jsr     xapPut
+        .put
         bra     _xenAdvance
 
 _xenBitBranch:
@@ -141,7 +141,7 @@ _xenBitBranch:
         lda     #3                  ; three bytes
         jsr     xapOffset
         bcs     _xenFail
-        jsr     xapPut
+        .put
 
 _xenAdvance:
         ldx     xapMode
@@ -210,17 +210,26 @@ _xofRange:
 ;   on one, so the check costs a taken branch on 255 bytes out of 256 and
 ;   a compare on the other. Assembling to memory points the vector at an
 ;   RTS and sets a limit the output never reaches.
+;
+;   Inlined at its callers, where the call and return were two thirds of
+;   the cost. The subroutine stays for anything cold enough not to care.
 ; -----------------------------------------------------------------------
 
-xapPut:
+put .macro
         sta     (xapOut)
         inc     xapOut
-        bne     _xpDone
+        bne     _put\@
         inc     xapOut+1
         lda     xapOut+1
         cmp     xapOutTop+1
-        beq     _xpFlush
-_xpDone:
+        bne     _put\@
+        jsr     xapPutFlush
+_put\@
+        .endm
+
+xapPut:
+        .put
         rts
-_xpFlush:
+
+xapPutFlush:
         jmp     (xapFlushVec)

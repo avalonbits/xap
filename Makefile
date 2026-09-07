@@ -34,6 +34,9 @@ TESTDIR  = test
 # can load it.
 CODEADDR = A000
 
+# The benchmark corpus: every legal instruction, evenly distributed.
+CORPUS_SIZE ?= 128K
+
 # How much of a line to assemble. 4 is the whole assembler; lower values stop
 # after a phase so the benchmark can attribute cost by difference.
 PROFILE ?= 4
@@ -46,7 +49,7 @@ PYENV = TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) \
 
 # "build" would name both this target and the directory, which makes it its
 # own prerequisite; the binary is the thing worth naming anyway.
-.PHONY: all isa test bench toolchain clean
+.PHONY: all isa test bench hotspots toolchain clean
 
 all: $(BUILDDIR)/xap.bin $(BUILDDIR)/bench.bin
 
@@ -67,6 +70,19 @@ $(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR)
 		-o $@ -L $(BUILDDIR)/bench.lst -l $(BUILDDIR)/bench.labels \
 		$(TESTDIR)/bench.asm
 
+# Two corpora. isa_even weights all 212 opcodes alike, so nothing can hide;
+# isa_real follows corpus/real.json, counted from real code by scan_isa.py, so
+# the number means something about how xap will feel.
+CORPORA = $(BUILDDIR)/isa_even.asm $(BUILDDIR)/isa_real.asm
+
+$(BUILDDIR)/isa_even.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
+	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
+		-o $@ --size $(CORPUS_SIZE)
+
+$(BUILDDIR)/isa_real.asm: tools/gen_corpus.py tools/gen_isa.py corpus/real.json | $(BUILDDIR)
+	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
+		-o $@ --size $(CORPUS_SIZE) --distribution corpus/real.json
+
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
 
@@ -79,9 +95,13 @@ isa:
 test: all
 	$(PYENV) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
+# Per-routine cycle counts, stepped under py65. No emulator needed.
+hotspots: all $(CORPORA)
+	$(PYENV) $(PYTHON) $(TESTDIR)/hotspots.py $(BUILDDIR)/isa_real.asm
+
 # Phase by phase cycle costs on the emulator.
-bench: all
-	$(PYENV) MAKE="$(MAKE)" $(PYTHON) $(TESTDIR)/benchmark.py
+bench: all $(CORPORA)
+	$(PYENV) MAKE="$(MAKE)" $(PYTHON) $(TESTDIR)/benchmark.py $(CORPORA)
 
 # Rebuilds toolchain/ from pinned upstream sources. Only needed to move a pin
 # or to port to another architecture.
