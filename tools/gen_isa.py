@@ -388,7 +388,8 @@ def emit(table, out):
             wide[MODE_INDEX[name]] = MODE_INDEX[w_name]
     w("        .byte   %s\n\n" % ",".join("$%02x" % b for b in wide))
 
-    w("XAP_FLAG_BITOP = $01\n\n")
+    w("XAP_FLAG_BITOP = $01            ; RMBn and its three siblings\n")
+    w("XAP_FLAG_ACC   = $02            ; a bare A means the accumulator\n\n")
 
     w("XAP_MNEMONIC_COUNT = %d\n\n" % len(names))
 
@@ -461,6 +462,25 @@ def emit(table, out):
     w(wrap(klass))
     w("\n")
 
+    # Pearson hashing for user labels, which unlike mnemonics are not known
+    # ahead of time. One xor and one indexed load a character, which is about
+    # as cheap as a hash gets on an 8-bit machine, and the result is already
+    # the bucket number with nothing to mask.
+    #
+    # The table is a permutation of 0..255 from a fixed seed, so it is the
+    # same table every build. Any permutation works; this one is not special.
+    w("; A permutation of 0..255, for hashing label names: h = T[h ^ c].\n")
+    w("xapPearson:\n")
+    perm = list(range(256))
+    state = 0x1234ABCD
+    for i in range(255, 0, -1):
+        state = (1103515245 * state + 12345) & 0x7FFFFFFF
+        j = state % (i + 1)
+        perm[i], perm[j] = perm[j], perm[i]
+    assert sorted(perm) == list(range(256))
+    w(wrap(perm))
+    w("\n")
+
     average, shift, slots = find_hash(names)
     w("; Hashed lookup: h = keyLo ^ (keyHi << %d), then probe forward.\n"
       % shift)
@@ -487,8 +507,12 @@ def emit(table, out):
     w(wrap([m >> 8 for m in masks]))
     w("\n")
 
+    # Which mnemonics read a lone "A" as the accumulator rather than as a
+    # label of that name. Only the six that have the mode do: "jmp a" is a
+    # jump to a label called a, and there is nothing else it could be.
     w("xapMnemonicFlags:\n")
-    w(wrap([1 if n[:3].lower() in BITOPS else 0 for n in names]))
+    w(wrap([(1 if n[:3].lower() in BITOPS else 0)
+            | (2 if n.lower() in ACC_FORM else 0) for n in names]))
     w("\n")
 
     w("; The address of each mnemonic's opcode row, so that selecting one is\n")

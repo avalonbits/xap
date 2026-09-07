@@ -44,11 +44,31 @@ XAP_BUFFER      = $2000
 XAP_BUFFER_SIZE = $1000             ; source window, 4K
 XAP_BUFFER_END  = XAP_BUFFER + XAP_BUFFER_SIZE
 
-; A page clear of the source buffer's end, which has one byte past it for
-; the terminator.
-XAP_OBJBUF      = XAP_BUFFER_END + $100
-XAP_OBJBUF_SIZE = $400              ; object output, 1K
-XAP_OBJBUF_END  = XAP_OBJBUF + XAP_OBJBUF_SIZE
+; The name of the label being read, upper cased. One byte past the source
+; window, which keeps the terminator, and clear of the hash table below.
+XAP_LABEL       = XAP_BUFFER_END + 1
+XAP_LABEL_MAX   = 31
+
+; One bucket head per byte of hash, so the hash needs no masking.
+XAP_SYMHASH     = $3100
+XAP_FIXHEAP     = $3300
+XAP_FIXHEAP_END = $4000             ; 3.25K, or 665 forward references
+
+; The symbol heap goes below everything else because it is the part that
+; wants the most room: eight bytes and a name each. A ROM-resident xap
+; would put all of this in banked RAM, where there is as much as anyone
+; needs; this flat map is what the tests run against.
+XAP_SYMHEAP     = $0800
+XAP_SYMHEAP_END = $2000             ; 6K, or about 460 labels
+
+; The object image. Fixups write back into code already emitted, which a
+; file that has been flushed cannot do -- so the object is built in
+; memory and written out at the end. That is not giving up the streaming
+; property: object code for this processor is bounded by the address
+; space and source is not, so streaming the thing that can be a megabyte
+; and buffering the thing that cannot exceed 64K is the right way round.
+XAP_IMAGE       = $4000
+XAP_IMAGE_END   = $9E00             ; 23.5K, up to where the KERNAL starts
 
 ; -----------------------------------------------------------------------
 ;   Zero page.
@@ -89,6 +109,17 @@ xapRunError   = XAP_ZP+42           ; held while the files are closed
 xapRawTop     = XAP_ZP+43           ; end of what was read, past the window
 xapNulSave    = XAP_ZP+45           ; the byte the window terminator covers
 xapNib        = XAP_ZP+46           ; the first three nibbles of a hex number
+xapSym        = XAP_ZP+49           ; the symbol record in hand
+xapSymTop     = XAP_ZP+51           ; next free byte of the symbol heap
+xapFixTop     = XAP_ZP+53           ; next free byte of the fixup heap
+xapFix        = XAP_ZP+55           ; the fixup record in hand
+xapLabelLen   = XAP_ZP+57
+xapUndefined  = XAP_ZP+58           ; how many labels are still not defined
+xapOrigin     = XAP_ZP+60           ; the program counter the image starts at
+xapImage      = XAP_ZP+62           ; where in memory that byte lives
+xapForward    = XAP_ZP+64           ; the operand named a label not yet known
+xapHole       = XAP_ZP+65           ; the address a fixup has to fill
+xapLabelPos   = XAP_ZP+67           ; the cursor, held across a lookup
 
 ; -----------------------------------------------------------------------
 ;   Error codes.
@@ -106,9 +137,13 @@ XAP_ERANGE    = $07         ; relative branch out of range
 XAP_EMODE     = $08         ; address mode not supported
 XAP_EEXPR     = $09         ; bad expression
 XAP_ELINE     = $0A         ; line too long
+XAP_EMEMORY   = $0D         ; out of room
 XAP_EMNEMONIC = $20         ; not an instruction
 XAP_EBIT      = $21         ; bit number missing, or not 0-7
 XAP_EVALUE    = $22         ; value does not fit the only mode available
+XAP_EUNDEF    = $23         ; a label was used and never defined
+XAP_EREDEF    = $24         ; a label was defined twice
+XAP_ELABEL    = $25         ; label name missing or too long
 
 ; -----------------------------------------------------------------------
 ;   Z clear when the character in A ends the line: the end of the window,
@@ -166,7 +201,26 @@ xapAssemble:
         stz     xapOutTop           ; a limit the output cannot reach
         stz     xapOutTop+1
         stz     xapObjError
+        jsr     xapBegin
         bra     xapRun
+
+; -----------------------------------------------------------------------
+;   Common to both entry points: remember where the image starts and what
+;   address its first byte has, so a fixup can turn one into the other,
+;   and throw away any labels from a previous run.
+; -----------------------------------------------------------------------
+
+xapBegin:
+        lda     xapOut
+        sta     xapImage
+        lda     xapOut+1
+        sta     xapImage+1
+        lda     xapPC
+        sta     xapOrigin
+        lda     xapPC+1
+        sta     xapOrigin+1
+        stz     xapForward
+        jmp     xapSymReset
 
 xapNoRefill:
         sec                         ; there was never any more
@@ -190,15 +244,12 @@ xapAssembleFile:
         sta     xapRefillVec
         lda     #>xapFileRefill
         sta     xapRefillVec+1
-        lda     #<xapObjFlush
+        lda     #<xapObjOverflow
         sta     xapFlushVec
-        lda     #>xapObjFlush
+        lda     #>xapObjOverflow
         sta     xapFlushVec+1
 
-        lda     #<XAP_OBJBUF_END
-        sta     xapOutTop
-        lda     #>XAP_OBJBUF_END
-        sta     xapOutTop+1
+        jsr     xapBegin
 
         ; Both files are closed whatever happens, so the outcome is put
         ; somewhere it will survive the closing rather than juggled on
@@ -251,11 +302,18 @@ xapRun:
 
         lda     xapObjError         ; a write may have failed silently
         bne     _xrObjError
+        lda     xapUndefined        ; and nothing may still be waiting
+        ora     xapUndefined+1
+        bne     _xrUndefined
         lda     #XAP_OK
         clc
 _xrDone:
         rts
 _xrObjError:
+        sec
+        rts
+_xrUndefined:
+        lda     #XAP_EUNDEF
         sec
         rts
 
@@ -285,8 +343,35 @@ xapLine:
         bne     xapEndLine
 
         .if XAP_PROFILE >= 1
-        jsr     xapMnemonic         ; which instruction
+        ; A label is an unknown mnemonic, or a word ending in a colon.
+        ; So try it as an instruction first and read a name if that fails,
+        ; which settles the column-one rule without a special case for it.
+        phy
+        jsr     xapMnemonic
+        bcs     _xlNotMnemonic
+        pla                         ; it was an instruction after all
+        bra     _xlOperand
+
+_xlNotMnemonic:
+        ; Only "that is not an instruction" means it might be a label.
+        ; RMB8 is an instruction with a bad bit number, and saying so is
+        ; more use than calling it a label and tripping over the operand.
+        cmp     #XAP_EMNEMONIC
+        beq     _xlLabel
+        ply
+        sec
+        rts
+
+_xlLabel:
+        ply
+        jsr     xapLabelHere
         bcs     xapFail
+        .skipspace
+        .atend                      ; a label on a line of its own
+        bne     xapEndLine
+        jsr     xapMnemonic
+        bcs     xapFail
+_xlOperand:
         .endif
         .if XAP_PROFILE >= 2
         jsr     xapOperand          ; and what it is applied to
@@ -376,6 +461,7 @@ _xssNext:
 _xssDone:
         rts
 
+        .include "symbol.asm"
         .include "lex.asm"
         .include "mode.asm"
         .include "encode.asm"

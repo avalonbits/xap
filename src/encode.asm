@@ -27,8 +27,10 @@ xapSelect:
         rts
 
 _xslNotBranch:
-        lda     xapValue+1          ; a value over 255 cannot be narrow
-        bne     _xslWiden
+        lda     xapForward          ; a value nobody knows yet cannot be
+        bne     _xslWiden           ; narrow: the width would have to change
+        lda     xapValue+1          ; when it turned out, and everything
+        bne     _xslWiden           ; after it would move
         ldx     xapMode
         jsr     xapHasMode
         bcs     _xslTake
@@ -48,15 +50,24 @@ _xslWiden:
 _xslNoWider:
         ldx     xapMode
         jsr     xapHasMode
-        bcs     _xslTooBig          ; the mode exists, the value is too big
+        bcs     _xslNarrowOnly
         lda     #XAP_EMODE
         sec
         rts
-_xslTooBig:
+
+_xslNarrowOnly:
+        ; The narrow mode is the only one there is. That is fine when the
+        ; value is not known yet -- the fixup will fill it in and check it
+        ; then -- and too big when it is. An immediate, a bit branch and
+        ; "(zp),y" all land here, none of which has a wider form.
+        lda     xapForward
+        bne     _xslTakeNarrow
         lda     #XAP_EVALUE
         sec
         rts
 
+_xslTakeNarrow:
+        ldx     xapMode
 _xslTake:
         stx     xapMode
         clc
@@ -114,36 +125,92 @@ _xenOpcode:
 
         lda     xapModeLength,x
         cmp     #1
-        beq     _xenAdvance
+        beq     _xenViaAdvance
         lda     xapValue
         .put
         lda     xapModeLength,x
         cmp     #3
-        bne     _xenAdvance
+        bne     _xenViaAdvance
         lda     xapValue+1
         .put
-        bra     _xenAdvance
+        bra     _xenViaAdvance
+
+; The relative and bit-branch paths sit between here and the tail of the
+; routine now, so the ordinary path cannot branch over them.
+_xenViaAdvance:
+        jmp     _xenAdvance
+_xenViaFail:
+        jmp     _xenFail
 
 _xenRelative:
+        lda     xapForward          ; a target nobody has defined yet is
+        bne     _xenRelHole         ; a hole, not an offset
         lda     xapValue            ; for a branch the operand is the
         sta     xapTarget           ; target
         lda     xapValue+1
         sta     xapTarget+1
         lda     #2
         jsr     xapOffset
-        bcs     _xenFail
+        bcs     _xenViaFail
+        .put
+        bra     _xenAdvance
+_xenRelHole:
+        lda     #0
         .put
         bra     _xenAdvance
 
 _xenBitBranch:
         lda     xapValue            ; the zero page byte, then the branch,
-        jsr     xapPut              ; which is measured from after all
-        lda     #3                  ; three bytes
+        .put                        ; which is measured from after all
+        lda     xapForward          ; three bytes
+        bne     _xenBitHole
+        lda     #3
         jsr     xapOffset
-        bcs     _xenFail
+        bcs     _xenViaFail
+        .put
+        bra     _xenAdvance
+_xenBitHole:
+        lda     #0
         .put
 
 _xenAdvance:
+        lda     xapForward          ; an operand that named a label nobody
+        beq     _xenNoFixup         ; has defined yet leaves a hole here
+
+        lda     xapPC               ; the hole is the byte after the
+        clc                         ; opcode, except for a bit branch,
+        adc     #1                  ; where it is the byte after that
+        sta     xapHole
+        lda     xapPC+1
+        adc     #0
+        sta     xapHole+1
+
+        ldx     xapMode
+        cpx     #XAP_MODE_ZPREL
+        bne     +
+        inc     xapHole
+        bne     +
+        inc     xapHole+1
++
+        cpx     #XAP_MODE_REL       ; a displacement, not an address
+        beq     _xenFixRel
+        cpx     #XAP_MODE_ZPREL
+        beq     _xenFixRel
+        lda     xapModeLength,x     ; otherwise the width says which
+        cmp     #3
+        beq     _xenFixAbs
+        lda     #XAP_FIX_LOW
+        bra     _xenFixKind
+_xenFixAbs:
+        lda     #XAP_FIX_ABS
+        bra     _xenFixKind
+_xenFixRel:
+        lda     #XAP_FIX_REL
+_xenFixKind:
+        jsr     xapSymFixup
+        bcs     _xenFail
+
+_xenNoFixup:
         ldx     xapMode
         lda     xapModeLength,x
         clc

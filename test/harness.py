@@ -15,10 +15,18 @@ from py65.devices.mpu65c02 import MPU
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 BINARY = os.path.join(ROOT, "build", "xap.bin")
 
+# xap's own working memory is fixed by src/xap.asm and cannot be moved from
+# here: the source window at $2000, the symbol table and fixups from $3100,
+# and the object image from $4000. So the text being assembled goes above
+# xap's code, where nothing else claims anything.
+#
+# It used to sit at $3000, which the symbol table grew over as soon as labels
+# arrived -- the assembler read its own hash buckets as source and the tests
+# that noticed looked like assembler bugs.
 CODE = 0xA000        # where xap.bin is assembled to run
-SOURCE = 0x3000      # the text being assembled
-OUTPUT = 0x4000      # where the object bytes land
-RETURN = 0x8000      # a return address that is not in any of them
+OUTPUT = 0x4000      # the object image, as src/xap.asm places it
+RETURN = 0xBF00      # above the code, below the source
+SOURCE = 0xC000      # the text being assembled
 
 # Zero page, mirroring src/xap.asm.
 ZP = 0x22
@@ -55,6 +63,9 @@ class Xap:
             mpu.memory[CODE + i] = b
 
         body = text.encode("ascii") + b"\0"
+        if SOURCE + len(body) > 0x10000:
+            raise AssertionError("%d bytes of source does not fit above $%04X"
+                                 % (len(body), SOURCE))
         for i, b in enumerate(body):
             mpu.memory[SOURCE + i] = b
 
