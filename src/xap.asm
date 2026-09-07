@@ -120,6 +120,12 @@ xapImage      = XAP_ZP+62           ; where in memory that byte lives
 xapForward    = XAP_ZP+64           ; the operand named a label not yet known
 xapHole       = XAP_ZP+65           ; the address a fixup has to fill
 xapLabelPos   = XAP_ZP+67           ; the cursor, held across a lookup
+xapPending    = XAP_ZP+68           ; operands whose size is not settled yet
+xapWideOp     = XAP_ZP+70           ; the opcode to swap in if one widens
+xapNarrow     = XAP_ZP+71           ; this operand was emitted optimistically
+xapWalk       = XAP_ZP+72           ; walks the symbol heap end to end
+xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
+                                    ; in until the whole file has been read
 
 ; -----------------------------------------------------------------------
 ;   Error codes.
@@ -302,6 +308,11 @@ xapRun:
 
         lda     xapObjError         ; a write may have failed silently
         bne     _xrObjError
+        lda     xapDeferred         ; holes left open while sizes moved
+        beq     _xrFilled
+        jsr     xapResolveAll
+        bcs     _xrDone
+_xrFilled:
         lda     xapUndefined        ; and nothing may still be waiting
         ora     xapUndefined+1
         bne     _xrUndefined

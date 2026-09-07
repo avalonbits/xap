@@ -186,27 +186,58 @@ class TestLabels(unittest.TestCase):
         self.same("a:\n  lda a\n")
         self.same("a:\n  jsr a\n")
 
-    # ---- the one place xap and 64tass differ ---------------------------
+    # ---- deciding how wide a forward reference is ----------------------
 
-    def test_a_forward_reference_is_always_absolute(self):
-        """The price of the single pass, and it is deliberate.
+    def test_a_forward_reference_above_zero_page_is_absolute(self):
+        """And is known to be, without knowing the value.
 
-        An instruction's length depends on its operand's value here -- two
-        bytes for zero page, three for absolute -- and at a forward reference
-        the value is not known. Committing to absolute means the length is
-        settled and only the value has to be patched. 64tass has more than one
-        pass and will go back and shorten it, so this is the one case where
-        the two do not agree.
+        A label defined later sits at or above the program counter, because
+        the counter only moves forward. So once past the zero page a forward
+        reference cannot be a zero page address, and its size is settled
+        where it is read.
         """
-        source = "  lda a\n  jmp done\na = $34\ndone:\n"
-        # 64tass would give A5 34 for the first instruction. xap cannot know
-        # that yet, so it reserves three bytes.
-        got = self.xap.assemble("  lda a\na:\n")
-        self.assertEqual(got[0], 0xAD, "a forward reference must be absolute")
-        self.assertEqual(len(got), 3)
+        got = self.xap.assemble("  lda fwd\nfwd:\n", origin=0x1000)
+        self.assertEqual(got, bytes([0xAD, 0x03, 0x10]))
+        self.same("  lda fwd\n  nop\nfwd:\n")
 
-        # Backwards, where the value is known, zero page is chosen normally.
-        self.same("  nop\n  lda $34\n")
+    def test_a_forward_reference_inside_zero_page_stays_narrow(self):
+        """Where it cannot be settled, the narrow form is tried first."""
+        for source in ("  lda fwd\nfwd:\n",
+                       "  lda fwd\n  nop\nfwd:\n",
+                       "  lda fwd\n  jmp fwd\nfwd:\n",
+                       "  ldx fwd\n  sta fwd\nfwd:\n"):
+            self.assertEqual(self.xap.assemble(source, origin=0x0010),
+                             self.tass(source, origin=0x0010), source)
+
+    def test_a_guess_that_was_wrong_widens(self):
+        """The image shifts up a byte and every label above it follows."""
+        for source in (
+            "  lda fwd\n" + "  nop\n" * 300 + "fwd:\n",
+            "a:\n  lda f\n" + "  nop\n" * 300 + "f:\n  jmp a\n  jmp f\n",
+            "  lda f1\n  ldx f2\n" + "  nop\n" * 300 + "f1:\nf2:\n",
+        ):
+            self.assertEqual(self.xap.assemble(source, origin=0x0010),
+                             self.tass(source, origin=0x0010), source[:40])
+
+    def test_a_second_guess_after_the_first_settled(self):
+        """Nothing is filled in until the file is read, once anything has
+        been guessed at all.
+
+        Filling holes as soon as a symbol arrives is wrong here: a later
+        guess that turns out badly moves code, and moves labels that have
+        already been written into holes. The fuzzer found this by producing
+        a program with a settled guess early and another one after it.
+        """
+        source = ("  lda f1\n" + "  nop\n" * 100 + "f1:\n"
+                  "  lda f2\n" + "  nop\n" * 300 + "f2:\n")
+        self.assertEqual(self.xap.assemble(source, origin=0x0010),
+                         self.tass(source, origin=0x0010))
+
+    def test_a_mnemonic_with_one_width_never_guesses(self):
+        """JMP has no zero page mode, so its size is settled whatever the
+        value turns out to be -- even in zero page."""
+        self.assertEqual(self.xap.assemble("  jmp fwd\nfwd:\n", origin=0x0010),
+                         bytes([0x4C, 0x13, 0x00]))
 
 
 if __name__ == "__main__":

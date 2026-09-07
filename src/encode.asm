@@ -12,6 +12,7 @@
 ; -----------------------------------------------------------------------
 
 xapSelect:
+        stz     xapNarrow           ; settled unless proved otherwise
         ; A branch's operand is an address, so it parses as zero page,
         ; but relative is the only mode a branch has. Nothing that has
         ; relative has any other mode, so finding it settles the matter
@@ -27,13 +28,57 @@ xapSelect:
         rts
 
 _xslNotBranch:
-        lda     xapForward          ; a value nobody knows yet cannot be
-        bne     _xslWiden           ; narrow: the width would have to change
-        lda     xapValue+1          ; when it turned out, and everything
-        bne     _xslWiden           ; after it would move
+        lda     xapForward
+        bne     _xslUnknown
+        lda     xapValue+1          ; a known value picks its own width
+        bne     _xslWiden
         ldx     xapMode
         jsr     xapHasMode
         bcs     _xslTake
+
+        ; The value is not known yet. If the mnemonic has only one width
+        ; the size is settled anyway -- JMP has no zero page mode, so
+        ; "jmp fwd" is three bytes whatever fwd turns out to be. Only when
+        ; both widths exist is the size genuinely undecidable, and then
+        ; the narrow one is emitted on the chance that it fits and widened
+        ; later if it does not.
+_xslUnknown:
+        ; A label defined later sits at or above where we are now, because
+        ; the program counter only moves forward. So once we are past the
+        ; zero page a forward reference cannot be a zero page address, and
+        ; its size is settled without knowing its value -- which is every
+        ; ordinary program, and keeps the guessing machinery out of them.
+        ;
+        ; This holds while every label is a code address. Assignments will
+        ; break it, since "foo = $12" can name a value below the program
+        ; counter, and then this has to ask whether the symbol could be an
+        ; assignment rather than where the program counter is.
+        lda     xapPC+1
+        bne     _xslWiden
+
+        ldx     xapMode
+        jsr     xapHasMode
+        bcc     _xslWiden           ; no narrow form: it is wide, settled
+
+        ldx     xapMode
+        lda     xapWiden,x
+        cmp     #XAP_MODE_NONE
+        beq     _xslTakeNarrow      ; no wide form either: also settled
+        tax
+        jsr     xapHasMode
+        bcc     _xslTakeNarrow
+
+        ; Both, so remember the opcode to swap in if it has to grow. Y is
+        ; the source cursor and has to come back untouched.
+        phy
+        txa
+        tay
+        lda     (xapRow),y
+        sta     xapWideOp
+        ply
+        inc     xapNarrow
+        ldx     xapMode
+        bra     _xslTake
 
 _xslWiden:
         ; Either the value does not fit, or the mnemonic has no narrow
@@ -196,10 +241,15 @@ _xenAdvance:
         beq     _xenFixRel
         cpx     #XAP_MODE_ZPREL
         beq     _xenFixRel
+        lda     xapNarrow           ; emitted narrow on the chance it fits
+        bne     _xenFixNarrow
         lda     xapModeLength,x     ; otherwise the width says which
         cmp     #3
         beq     _xenFixAbs
         lda     #XAP_FIX_LOW
+        bra     _xenFixKind
+_xenFixNarrow:
+        lda     #XAP_FIX_NARROW
         bra     _xenFixKind
 _xenFixAbs:
         lda     #XAP_FIX_ABS

@@ -34,15 +34,18 @@ XAP_SYM_LEN    = 7
 XAP_SYM_NAME   = 8          ; and the name runs on from here
 
 XAP_SYM_DEFINED = $80
+XAP_SYM_ADDRESS = $40       ; the value is a code address and moves with it
 
 XAP_FIX_PC     = 0          ; the address the hole occupies
 XAP_FIX_KIND   = 2
 XAP_FIX_NEXT   = 3
-XAP_FIX_SIZE   = 5
+XAP_FIX_WIDE   = 5          ; the opcode to swap in if this one widens
+XAP_FIX_SIZE   = 6
 
 XAP_FIX_ABS    = 0          ; two bytes, low then high
 XAP_FIX_REL    = 1          ; one signed byte, from the instruction after
 XAP_FIX_LOW    = 2          ; one byte, and the value has to fit in it
+XAP_FIX_NARROW = 3          ; emitted narrow on the chance that it fits
 
 ; -----------------------------------------------------------------------
 ;   Empties the table: every bucket, and both heaps.
@@ -74,6 +77,9 @@ _xsrClear:
         sta     xapFixTop+1
         stz     xapUndefined
         stz     xapUndefined+1
+        stz     xapPending
+        stz     xapPending+1
+        stz     xapDeferred
         rts
 
 ; -----------------------------------------------------------------------
@@ -271,7 +277,7 @@ _xsdSet:
         lda     xapValue+1
         sta     (xapSym),y
         ldy     #XAP_SYM_FLAGS
-        lda     #XAP_SYM_DEFINED
+        lda     #XAP_SYM_DEFINED|XAP_SYM_ADDRESS
         sta     (xapSym),y
 
         lda     xapUndefined        ; one fewer outstanding
@@ -279,7 +285,18 @@ _xsdSet:
         dec     xapUndefined+1
 +       dec     xapUndefined
 
+        ; Sizes before values: a widening moves code, and moving code
+        ; changes addresses that have not been written anywhere yet
+        ; because nothing is patched while a size is unsettled.
+        jsr     xapSymSettle
+        bcs     _xsdFailed
+        lda     xapDeferred
+        bne     _xsdLater
         jmp     xapSymResolve
+_xsdLater:
+        clc
+_xsdFailed:
+        rts
 
 _xsdTwice:
         lda     #XAP_EREDEF
@@ -326,6 +343,25 @@ _xsxRoom:
 
         pla
         ldy     #XAP_FIX_KIND
+        sta     (xapFix),y
+        cmp     #XAP_FIX_NARROW     ; one more size not yet settled
+        bne     +
+        inc     xapPending
+        bne     +
+        inc     xapPending+1
++       cmp     #XAP_FIX_NARROW
+        bne     +
+        ; Once one size has been guessed, nothing is filled in until the
+        ; file is read. A guess that turns out wrong moves code, and
+        ; moving code moves labels -- including ones already written into
+        ; holes that were filled while this looked settled. Sticky rather
+        ; than "while a size is pending", because a second guess later in
+        ; the file would invalidate everything the first one let through.
+        lda     #1
+        sta     xapDeferred
++
+        lda     xapWideOp           ; only a narrow fixup reads this back
+        ldy     #XAP_FIX_WIDE
         sta     (xapFix),y
 
         ldy     #XAP_SYM_FIXUP      ; onto the front of the symbol's chain
@@ -498,4 +534,339 @@ xapLabelHere:
         jsr     xapSymDefine        ; the line still has to be read
         ldy     xapLabelPos
 _xlhExit:
+        rts
+
+; -----------------------------------------------------------------------
+;   Turns the image address of the program counter in YX into xapTmp.
+; -----------------------------------------------------------------------
+
+xapImageAt:
+        txa
+        sec
+        sbc     xapOrigin
+        sta     xapTmp
+        tya
+        sbc     xapOrigin+1
+        sta     xapTmp+1
+        clc
+        lda     xapTmp
+        adc     xapImage
+        sta     xapTmp
+        lda     xapTmp+1
+        adc     xapImage+1
+        sta     xapTmp+1
+        rts
+
+; -----------------------------------------------------------------------
+;   Widens the instruction whose operand hole is at xapHole, swapping in
+;   the opcode in A. Everything above the hole moves up one byte.
+;
+;   The shift is what makes this the expensive case, so only genuinely
+;   ambiguous operands ever get here: a mnemonic with one width has its
+;   size settled whatever the value turns out to be.
+; -----------------------------------------------------------------------
+
+xapWidenHole:
+        sta     xapWideOp
+
+        lda     xapOut              ; room for one more byte
+        cmp     #<XAP_IMAGE_END
+        lda     xapOut+1
+        sbc     #>XAP_IMAGE_END
+        bcs     _xwFull
+
+        ldx     xapHole
+        ldy     xapHole+1
+        jsr     xapImageAt          ; xapTmp is where the hole lives
+
+        ; Copy the tail up a byte, working down from the top so the two
+        ; runs do not tread on each other.
+        lda     xapOut
+        sta     xapFill
+        lda     xapOut+1
+        sta     xapFill+1
+_xwShift:
+        lda     xapFill
+        cmp     xapTmp
+        bne     _xwByte
+        lda     xapFill+1
+        cmp     xapTmp+1
+        beq     _xwShifted
+_xwByte:
+        lda     xapFill
+        bne     +
+        dec     xapFill+1
++       dec     xapFill
+        lda     (xapFill)
+        ldy     #1
+        sta     (xapFill),y
+        bra     _xwShift
+
+_xwShifted:
+        lda     xapTmp              ; the opcode sits just below the hole
+        bne     +
+        dec     xapTmp+1
++       dec     xapTmp
+        lda     xapWideOp
+        sta     (xapTmp)
+
+        inc     xapOut              ; and everything after has moved
+        bne     +
+        inc     xapOut+1
++       inc     xapPC
+        bne     +
+        inc     xapPC+1
++
+        jsr     _xwMoveLabels
+        jsr     _xwMoveFixups
+        clc
+        rts
+
+_xwFull:
+        lda     #XAP_EMEMORY
+        sec
+        rts
+
+; -----------------------------------------------------------------------
+;   Every code label above the hole is a byte further on than it was.
+;   A label that is not an address -- an assignment, when those exist --
+;   does not move, which is what the flag is for.
+; -----------------------------------------------------------------------
+
+_xwMoveLabels:
+        lda     #<XAP_SYMHEAP
+        sta     xapFill
+        lda     #>XAP_SYMHEAP
+        sta     xapFill+1
+
+_xwmLoop:
+        lda     xapFill             ; reached the top of the heap?
+        cmp     xapSymTop
+        lda     xapFill+1
+        sbc     xapSymTop+1
+        bcs     _xwmDone
+
+        ldy     #XAP_SYM_FLAGS
+        lda     (xapFill),y
+        and     #XAP_SYM_ADDRESS
+        beq     _xwmNext
+
+        ldy     #XAP_SYM_VALUE
+        lda     (xapFill),y
+        sta     xapWrote
+        iny
+        lda     (xapFill),y
+        sta     xapWrote+1
+
+        lda     xapHole             ; only what is above the hole moves
+        cmp     xapWrote
+        lda     xapHole+1
+        sbc     xapWrote+1
+        bcs     _xwmNext
+
+        inc     xapWrote
+        bne     +
+        inc     xapWrote+1
++       ldy     #XAP_SYM_VALUE
+        lda     xapWrote
+        sta     (xapFill),y
+        iny
+        lda     xapWrote+1
+        sta     (xapFill),y
+
+_xwmNext:
+        ldy     #XAP_SYM_LEN        ; records are eight bytes and a name
+        lda     (xapFill),y
+        clc
+        adc     #XAP_SYM_NAME
+        adc     xapFill
+        sta     xapFill
+        bcc     _xwmLoop
+        inc     xapFill+1
+        bra     _xwmLoop
+
+_xwmDone:
+        rts
+
+; -----------------------------------------------------------------------
+;   And so is every hole still waiting above it.
+; -----------------------------------------------------------------------
+
+_xwMoveFixups:
+        lda     #<XAP_FIXHEAP
+        sta     xapFill
+        lda     #>XAP_FIXHEAP
+        sta     xapFill+1
+
+_xwfLoop:
+        lda     xapFill
+        cmp     xapFixTop
+        lda     xapFill+1
+        sbc     xapFixTop+1
+        bcs     _xwfDone
+
+        ldy     #XAP_FIX_PC
+        lda     (xapFill),y
+        sta     xapWrote
+        iny
+        lda     (xapFill),y
+        sta     xapWrote+1
+
+        lda     xapHole
+        cmp     xapWrote
+        lda     xapHole+1
+        sbc     xapWrote+1
+        bcs     _xwfNext
+
+        inc     xapWrote
+        bne     +
+        inc     xapWrote+1
++       ldy     #XAP_FIX_PC
+        lda     xapWrote
+        sta     (xapFill),y
+        iny
+        lda     xapWrote+1
+        sta     (xapFill),y
+
+_xwfNext:
+        clc
+        lda     xapFill
+        adc     #XAP_FIX_SIZE
+        sta     xapFill
+        bcc     _xwfLoop
+        inc     xapFill+1
+        bra     _xwfLoop
+
+_xwfDone:
+        rts
+
+; -----------------------------------------------------------------------
+;   Settles the size of every operand waiting on the symbol in xapSym,
+;   whose value is now in xapValue. CC on success.
+;
+;   A narrow hole that turns out to hold more than a byte grows, taking
+;   the rest of the image up with it. One that fits becomes an ordinary
+;   one-byte hole and is filled later with everything else.
+; -----------------------------------------------------------------------
+
+xapSymSettle:
+        ldy     #XAP_SYM_FIXUP
+        lda     (xapSym),y
+        sta     xapFix
+        iny
+        lda     (xapSym),y
+        sta     xapFix+1
+
+_xssWalk:
+        lda     xapFix
+        ora     xapFix+1
+        beq     _xssDone
+
+        ldy     #XAP_FIX_KIND
+        lda     (xapFix),y
+        cmp     #XAP_FIX_NARROW
+        bne     _xssNext
+
+        lda     xapPending          ; settled, whichever way it goes
+        bne     +
+        dec     xapPending+1
++       dec     xapPending
+
+        lda     xapValue+1
+        bne     _xssGrow
+
+        lda     #XAP_FIX_LOW        ; it fits, so it stays as it is
+        ldy     #XAP_FIX_KIND
+        sta     (xapFix),y
+        bra     _xssNext
+
+_xssGrow:
+        ldy     #XAP_FIX_PC
+        lda     (xapFix),y
+        sta     xapHole
+        iny
+        lda     (xapFix),y
+        sta     xapHole+1
+
+        ldy     #XAP_FIX_WIDE
+        lda     (xapFix),y
+        jsr     xapWidenHole
+        bcs     _xssFailed
+
+        lda     #XAP_FIX_ABS        ; two bytes now, not one
+        ldy     #XAP_FIX_KIND
+        sta     (xapFix),y
+
+_xssNext:
+        ldy     #XAP_FIX_NEXT
+        lda     (xapFix),y
+        pha
+        iny
+        lda     (xapFix),y
+        sta     xapFix+1
+        pla
+        sta     xapFix
+        bra     _xssWalk
+
+_xssDone:
+        clc
+_xssFailed:
+        rts
+
+; -----------------------------------------------------------------------
+;   Fills every hole in the whole table. Run once the last unsettled size
+;   settles, because until then any of them could still move.
+; -----------------------------------------------------------------------
+
+xapResolveAll:
+        lda     #<XAP_SYMHEAP
+        sta     xapWalk
+        lda     #>XAP_SYMHEAP
+        sta     xapWalk+1
+
+_xraLoop:
+        lda     xapWalk              ; reached the top of the heap?
+        cmp     xapSymTop
+        lda     xapWalk+1
+        sbc     xapSymTop+1
+        bcs     _xraDone
+
+        lda     xapWalk
+        sta     xapSym
+        lda     xapWalk+1
+        sta     xapSym+1
+
+        ldy     #XAP_SYM_FLAGS      ; only a symbol with a value can fill
+        lda     (xapSym),y          ; anything
+        bpl     _xraNext
+
+        ldy     #XAP_SYM_FIXUP
+        lda     (xapSym),y
+        ldy     #XAP_SYM_FIXUP+1
+        ora     (xapSym),y
+        beq     _xraNext
+
+        ldy     #XAP_SYM_VALUE
+        lda     (xapSym),y
+        sta     xapValue
+        iny
+        lda     (xapSym),y
+        sta     xapValue+1
+        jsr     xapSymResolve
+        bcs     _xraFailed
+
+_xraNext:
+        ldy     #XAP_SYM_LEN
+        lda     (xapWalk),y
+        clc
+        adc     #XAP_SYM_NAME
+        adc     xapWalk
+        sta     xapWalk
+        bcc     _xraLoop
+        inc     xapWalk+1
+        bra     _xraLoop
+
+_xraDone:
+        clc
+_xraFailed:
         rts
