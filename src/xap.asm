@@ -88,6 +88,7 @@ xapFlushVec   = XAP_ZP+40           ; what to do with a full object buffer
 xapRunError   = XAP_ZP+42           ; held while the files are closed
 xapRawTop     = XAP_ZP+43           ; end of what was read, past the window
 xapNulSave    = XAP_ZP+45           ; the byte the window terminator covers
+xapNib        = XAP_ZP+46           ; the first three nibbles of a hex number
 
 ; -----------------------------------------------------------------------
 ;   Error codes.
@@ -108,6 +109,41 @@ XAP_ELINE     = $0A         ; line too long
 XAP_EMNEMONIC = $20         ; not an instruction
 XAP_EBIT      = $21         ; bit number missing, or not 0-7
 XAP_EVALUE    = $22         ; value does not fit the only mode available
+
+; -----------------------------------------------------------------------
+;   Z clear when the character in A ends the line: the end of the window,
+;   a newline, or a comment. Leaves the character in X, so a caller that
+;   wants it back does not read it again.
+;
+;   A macro because it was four compares behind a call, three times a
+;   line, on a character the caller had usually just read.
+; -----------------------------------------------------------------------
+
+atend .macro
+        tax
+        lda     xapClass,x
+        and     #XAP_CLASS_EOL
+        .endm
+
+; -----------------------------------------------------------------------
+;   Steps the cursor over spaces and tabs, leaving the first character
+;   that is neither in A.
+;
+;   Most calls have nothing to skip -- there is one run of indentation a
+;   line and the rest of the calls sit between tokens that are usually
+;   already touching. So the first character is tested inline and the
+;   loop is only entered when there is really a space there.
+; -----------------------------------------------------------------------
+
+skipspace .macro
+        lda     (xapSrc),y
+        cmp     #' '
+        beq     _sk\@
+        cmp     #9
+        bne     _skd\@
+_sk\@   jsr     xapSkipSpace
+_skd\@
+        .endm
 
 ; -----------------------------------------------------------------------
 ;   Assembles the text at xapSrc to xapOut, starting at xapPC.
@@ -244,9 +280,9 @@ xapRefill:
 
 xapLine:
         ldy     #0
-        jsr     xapSkipSpace
-        jsr     xapAtEnd            ; a blank or comment-only line
-        beq     xapEndLine
+        .skipspace                  ; which leaves the character in A
+        .atend                      ; a blank or comment-only line
+        bne     xapEndLine
 
         .if XAP_PROFILE >= 1
         jsr     xapMnemonic         ; which instruction
@@ -264,9 +300,9 @@ xapLine:
         jsr     xapEncode           ; bytes out
         bcs     xapFail
 
-        jsr     xapSkipSpace
-        jsr     xapAtEnd            ; nothing may follow the operand
-        beq     xapEndLine
+        .skipspace
+        .atend                      ; nothing may follow the operand
+        bne     xapEndLine
         lda     #XAP_ESYNTAX
         bra     xapFail
         .else
@@ -289,7 +325,7 @@ xapEndLine:
         beq     _xelEol
         cmp     #10
         beq     _xelEol
-        iny                         ; comment body
+        iny                         ; a comment body, or trailing space
         bra     xapEndLine
 
 _xelEol:
@@ -310,25 +346,6 @@ _xelFold:
         inc     xapSrc+1
 _xelExit:
         clc
-        rts
-
-; -----------------------------------------------------------------------
-;   Z set when the cursor is at something that ends the line: the end of
-;   the window, a newline, or a comment. Does not move the cursor.
-; -----------------------------------------------------------------------
-
-xapAtEnd:
-        lda     (xapSrc),y
-        beq     _xaeYes
-        cmp     #13
-        beq     _xaeYes
-        cmp     #10
-        beq     _xaeYes
-        cmp     #';'
-        beq     _xaeYes
-        rts                         ; Z clear from the compare
-_xaeYes:
-        lda     #0                  ; Z set
         rts
 
 ; -----------------------------------------------------------------------

@@ -185,16 +185,29 @@ xapNumber:
         cmp     #'$'
         beq     _xnHex
         cmp     #'%'
-        beq     _xnBinary
+        beq     _xnViaBinary
         cmp     #''''
-        beq     _xnChar
+        beq     _xnViaChar
 
 ; ---- decimal ----------------------------------------------------------
 
         tax
         lda     xapHexDigit,x
         cmp     #10
-        bcs     _xnBad              ; a number has to start with a digit
+        bcc     _xnDecimal          ; a number has to start with a digit
+
+_xnBad:
+        lda     #XAP_EEXPR
+        sec
+        rts
+
+        ; The hex block below is long enough that the far bases cannot
+        ; branch over it, so they go through here.
+_xnViaBinary:
+        jmp     _xnBinary
+_xnViaChar:
+        jmp     _xnChar
+
 _xnDecimal:
         jsr     xapMul10
         clc
@@ -212,6 +225,12 @@ _xnDecimal:
         rts
 
 ; ---- hex --------------------------------------------------------------
+;
+;   Four digits is the most that can matter in sixteen bits, and two or
+;   four is what almost every operand is, so the digits are gathered and
+;   combined once rather than shifted in one at a time. Shifting a zero
+;   page word left four costs forty cycles a digit; folding a pair of
+;   nibbles into a byte costs eight, once.
 
 _xnHex:
         iny
@@ -220,8 +239,91 @@ _xnHex:
         lda     xapHexDigit,x
         cmp     #XAP_NOT_DIGIT
         beq     _xnBad
+        sta     xapNib
+
+        iny
+        lda     (xapSrc),y
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        beq     _xnHex1
+        sta     xapNib+1
+
+        iny
+        lda     (xapSrc),y
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        beq     _xnHex2
+        sta     xapNib+2
+
+        iny
+        lda     (xapSrc),y
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        beq     _xnHex3
+
+        pha                         ; four digits, the last still in A
+        lda     xapNib
+        asl     a
+        asl     a
+        asl     a
+        asl     a
+        ora     xapNib+1
+        sta     xapValue+1
+        lda     xapNib+2
+        asl     a
+        asl     a
+        asl     a
+        asl     a
+        sta     xapValue
+        pla
+        ora     xapValue
+        sta     xapValue
+
+        iny                         ; a fifth digit is possible, but not
+        lda     (xapSrc),y          ; worth unrolling for
+        tax
+        lda     xapHexDigit,x
+        cmp     #XAP_NOT_DIGIT
+        bne     _xnHexLoop
+        clc
+        rts
+
+_xnHex1:
+        lda     xapNib
+        sta     xapValue
+        clc
+        rts
+
+_xnHex2:
+        lda     xapNib
+        asl     a
+        asl     a
+        asl     a
+        asl     a
+        ora     xapNib+1
+        sta     xapValue
+        clc
+        rts
+
+_xnHex3:
+        lda     xapNib
+        sta     xapValue+1
+        lda     xapNib+1
+        asl     a
+        asl     a
+        asl     a
+        asl     a
+        ora     xapNib+2
+        sta     xapValue
+        clc
+        rts
+
+        ; Past four digits the value simply wraps, so the slow way will do.
 _xnHexLoop:
-        asl     xapValue            ; a nibble at a time
+        asl     xapValue
         rol     xapValue+1
         asl     xapValue
         rol     xapValue+1
@@ -242,13 +344,16 @@ _xnHexLoop:
 
 ; ---- binary -----------------------------------------------------------
 
+_xnViaBad:
+        jmp     _xnBad
+
 _xnBinary:
         iny
         lda     (xapSrc),y
         tax
         lda     xapHexDigit,x
         cmp     #2
-        bcs     _xnBad
+        bcs     _xnViaBad
 _xnBinLoop:
         asl     xapValue
         rol     xapValue+1
@@ -271,19 +376,14 @@ _xnBinLoop:
 _xnChar:
         iny
         lda     (xapSrc),y
-        beq     _xnBad              ; end of text inside the quotes
+        beq     _xnViaBad           ; end of text inside the quotes
         sta     xapValue
         iny
         lda     (xapSrc),y
         cmp     #''''
-        bne     _xnBad
+        bne     _xnViaBad
         iny
         clc
-        rts
-
-_xnBad:
-        lda     #XAP_EEXPR
-        sec
         rts
 
 ; -----------------------------------------------------------------------

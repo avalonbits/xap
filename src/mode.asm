@@ -21,11 +21,11 @@ xapOperand:
         stz     xapTarget
         stz     xapTarget+1
 
-        jsr     xapSkipSpace
-        jsr     xapAtEnd
-        beq     _xoImplied          ; nothing there at all
+        .skipspace
+        .atend
+        bne     _xoImplied          ; nothing there at all
 
-        lda     (xapSrc),y
+        txa                         ; .atend left the character in X
         cmp     #'#'
         beq     _xoImmediate
         cmp     #'('
@@ -34,12 +34,10 @@ xapOperand:
         ; A letter here can only be the accumulator's "A". There are no
         ; symbols yet, so any other word is a syntax error rather than a
         ; name to resolve later.
-        jsr     xapUpper
-        cmp     #'A'
-        bcc     _xoAddress
-        cmp     #'Z'+1
-        bcs     _xoAddress
-        cmp     #'A'
+        tax
+        lda     xapLetter,x
+        beq     _xoAddressNear      ; not a letter, so it is a number
+        cmp     #1                  ; A is the first letter
         bne     _xoSyntaxNear
         iny
         lda     (xapSrc),y          ; "AB" is not the accumulator
@@ -52,16 +50,18 @@ _xoImplied:
         clc
         rts
 
-; The error itself sits at the end of the routine, out of reach of the
-; branches at either end of it. This is the staging post they use.
+; The two ends of this routine are out of branch range of each other, so
+; these are the staging posts they jump through.
 _xoSyntaxNear:
         jmp     _xoSyntax
+_xoAddressNear:
+        jmp     _xoAddress
 
 ; ---- #nn --------------------------------------------------------------
 
 _xoImmediate:
         iny
-        jsr     xapSkipSpace
+        .skipspace
         jsr     xapNumber
         bcs     _xoExit
         lda     #XAP_MODE_IMM
@@ -74,10 +74,10 @@ _xoExit:
 
 _xoIndirect:
         iny
-        jsr     xapSkipSpace
+        .skipspace
         jsr     xapNumber
         bcs     _xoExit
-        jsr     xapSkipSpace
+        .skipspace
 
         lda     (xapSrc),y
         cmp     #','
@@ -85,16 +85,16 @@ _xoIndirect:
         cmp     #')'
         bne     _xoSyntaxNear
         iny
-        jsr     xapSkipSpace
+        .skipspace
 
         lda     (xapSrc),y          ; (nn) or (nn),y
         cmp     #','
         bne     _xoIndirectPlain
         iny
-        jsr     xapSkipSpace
+        .skipspace
         lda     #'Y'
         jsr     xapRegister
-        bcs     _xoSyntaxNear
+        bcs     _xoSyntaxMid
         lda     #XAP_MODE_IZY
         sta     xapMode
         clc
@@ -106,16 +106,20 @@ _xoIndirectPlain:
         clc
         rts
 
+; The middle of the routine is out of range of both ends now.
+_xoSyntaxMid:
+        jmp     _xoSyntax
+
 _xoIndirectX:
         iny
-        jsr     xapSkipSpace
+        .skipspace
         lda     #'X'
         jsr     xapRegister
-        bcs     _xoSyntax
-        jsr     xapSkipSpace
+        bcs     _xoSyntaxMid
+        .skipspace
         lda     (xapSrc),y
         cmp     #')'
-        bne     _xoSyntax
+        bne     _xoSyntaxMid
         iny
         lda     #XAP_MODE_IZX
         sta     xapMode
@@ -126,8 +130,8 @@ _xoIndirectX:
 
 _xoAddress:
         jsr     xapNumber
-        bcs     _xoExit
-        jsr     xapSkipSpace
+        bcs     _xoAddrExit         ; the shared exit is out of reach here
+        .skipspace
 
         lda     (xapSrc),y
         cmp     #','
@@ -135,11 +139,12 @@ _xoAddress:
         lda     #XAP_MODE_ZP
         sta     xapMode
         clc
+_xoAddrExit:
         rts
 
 _xoIndexed:
         iny
-        jsr     xapSkipSpace
+        .skipspace
 
         lda     #'X'
         jsr     xapRegister
