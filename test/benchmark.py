@@ -46,9 +46,10 @@ ORIGIN = 0x1000
 STAGES = [
     (0, "read the file, frame the lines"),
     (1, "+ mnemonic lookup"),
-    (2, "+ operand and addressing mode"),
-    (3, "+ width selection"),
-    (4, "+ encode and emit"),
+    (2, "+ label definition"),
+    (3, "+ operand and addressing mode"),
+    (4, "+ width selection"),
+    (5, "+ encode and emit"),
 ]
 
 def corpus(path):

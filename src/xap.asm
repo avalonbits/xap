@@ -124,6 +124,7 @@ xapPending    = XAP_ZP+68           ; operands whose size is not settled yet
 xapWideOp     = XAP_ZP+70           ; the opcode to swap in if one widens
 xapNarrow     = XAP_ZP+71           ; this operand was emitted optimistically
 xapWalk       = XAP_ZP+72           ; walks the symbol heap end to end
+xapFixFree    = XAP_ZP+75           ; retired fixup records, for reuse
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
                                     ; in until the whole file has been read
 
@@ -375,6 +376,10 @@ _xlNotMnemonic:
 
 _xlLabel:
         ply
+        .if XAP_PROFILE >= 2
+        ; Defining it is its own phase, because on a file that is mostly
+        ; labels it is most of the work, and charging it to the mnemonic
+        ; lookup that failed to recognise it says nothing useful.
         jsr     xapLabelHere
         bcs     xapFail
         .skipspace
@@ -382,17 +387,20 @@ _xlLabel:
         bne     xapEndLine
         jsr     xapMnemonic
         bcs     xapFail
+        .else
+        bra     xapEndLine
+        .endif
 _xlOperand:
         .endif
-        .if XAP_PROFILE >= 2
+        .if XAP_PROFILE >= 3
         jsr     xapOperand          ; and what it is applied to
         bcs     xapFail
         .endif
-        .if XAP_PROFILE >= 3
+        .if XAP_PROFILE >= 4
         jsr     xapSelect           ; the mode those two agree on
         bcs     xapFail
         .endif
-        .if XAP_PROFILE >= 4
+        .if XAP_PROFILE >= 5
         jsr     xapEncode           ; bytes out
         bcs     xapFail
 
