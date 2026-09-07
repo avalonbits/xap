@@ -21,11 +21,15 @@ TESTDIR  = test
 # can load it.
 CODEADDR = A000
 
-TASSFLAGS = --mw65c02 -q -Wall
+# How much of a line to assemble. 4 is the whole assembler; lower values stop
+# after a phase so the benchmark can attribute cost by difference.
+PROFILE ?= 4
+
+TASSFLAGS = --mw65c02 -q -Wall -D XAP_PROFILE=$(PROFILE)
 
 # "build" would name both this target and the directory, which makes it its
 # own prerequisite; the binary is the thing worth naming anyway.
-.PHONY: all isa test clean
+.PHONY: all isa test bench clean
 
 all: $(BUILDDIR)/xap.bin $(BUILDDIR)/bench.bin
 
@@ -64,6 +68,11 @@ X16ROM ?=
 test: all
 	TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) \
 		$(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
+
+# Phase by phase cycle costs on the emulator. Needs $X16EMU like the tests.
+bench: all
+	TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) MAKE="$(MAKE)" \
+		$(PYTHON) $(TESTDIR)/benchmark.py
 
 clean:
 	rm -rf $(BUILDDIR)

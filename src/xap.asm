@@ -40,10 +40,15 @@
 ;   its end for the terminator that marks the end of the window.
 ; -----------------------------------------------------------------------
 
-XAP_BUFFER      = $2000             ; source window, 2K
-XAP_BUFFER_END  = $2800
-XAP_OBJBUF      = $2900             ; object output, 1K
-XAP_OBJBUF_END  = $2D00
+XAP_BUFFER      = $2000
+XAP_BUFFER_SIZE = $1000             ; source window, 4K
+XAP_BUFFER_END  = XAP_BUFFER + XAP_BUFFER_SIZE
+
+; A page clear of the source buffer's end, which has one byte past it for
+; the terminator.
+XAP_OBJBUF      = XAP_BUFFER_END + $100
+XAP_OBJBUF_SIZE = $400              ; object output, 1K
+XAP_OBJBUF_END  = XAP_OBJBUF + XAP_OBJBUF_SIZE
 
 ; -----------------------------------------------------------------------
 ;   Zero page.
@@ -231,18 +236,31 @@ xapRefill:
 ;   cannot move under the cursor.
 ; -----------------------------------------------------------------------
 
+; XAP_PROFILE stops the line after a given stage, so that building at 0..4
+; and taking the differences attributes the cost by phase. Every stage still
+; reads the whole file and walks every line, so what changes between two
+; builds is one phase and nothing else. It is set by the build; 4 is the
+; whole assembler and is what ships.
+
 xapLine:
         ldy     #0
         jsr     xapSkipSpace
         jsr     xapAtEnd            ; a blank or comment-only line
         beq     xapEndLine
 
+        .if XAP_PROFILE >= 1
         jsr     xapMnemonic         ; which instruction
         bcs     xapFail
+        .endif
+        .if XAP_PROFILE >= 2
         jsr     xapOperand          ; and what it is applied to
         bcs     xapFail
+        .endif
+        .if XAP_PROFILE >= 3
         jsr     xapSelect           ; the mode those two agree on
         bcs     xapFail
+        .endif
+        .if XAP_PROFILE >= 4
         jsr     xapEncode           ; bytes out
         bcs     xapFail
 
@@ -250,7 +268,10 @@ xapLine:
         jsr     xapAtEnd            ; nothing may follow the operand
         beq     xapEndLine
         lda     #XAP_ESYNTAX
-        ; fall through
+        bra     xapFail
+        .else
+        bra     xapEndLine          ; a partial build stops here
+        .endif
 
 xapFail:
         sec
