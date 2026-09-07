@@ -37,9 +37,9 @@ LABELS = os.path.join(ROOT, "build", "xap.labels")
 # to be read, so the assembler ate its own input and the profile was of
 # whatever that produced.
 CODE = 0xA000
-SOURCE = 0x1000
-OUTPUT = 0x7000
-RETURN = 0xFFF0
+OUTPUT = 0x4000      # the object image, as src/xap.asm places it
+RETURN = 0xBF00
+SOURCE = 0xC000
 ZP = 0x22
 
 CORPUS = os.path.join(ROOT, "build", "isa_real.asm")
@@ -48,7 +48,7 @@ CORPUS = os.path.join(ROOT, "build", "isa_real.asm")
 # this takes a prefix of the benchmark corpus rather than all of it. The corpus
 # cycles through the instruction set in turn, so any prefix of more than a few
 # hundred lines holds every form in much the same proportion as the whole.
-LINES = int(os.environ.get("HOTSPOT_LINES", "1600"))
+LINES = int(os.environ.get("HOTSPOT_LINES", "1000"))
 
 
 def corpus(lines):
@@ -89,12 +89,9 @@ def main():
 
     # One object byte per two or three of source, so this is generous; the
     # point is that it fails loudly rather than quietly assembling nonsense.
-    if SOURCE + size + 1 > OUTPUT:
-        sys.exit("%d bytes of source runs into the object buffer -- "
-                 "lower HOTSPOT_LINES" % size)
-    # Three bytes at most per line, and a line is at least ten bytes of text.
-    if OUTPUT + size // 3 + 16 > CODE:
-        sys.exit("the object code could run into xap -- lower HOTSPOT_LINES")
+    if SOURCE + size + 1 > 0x10000:
+        sys.exit("%d bytes of source does not fit above $%04X -- "
+                 "lower HOTSPOT_LINES" % (size, SOURCE))
 
     mpu = MPU()
     for i, b in enumerate(code):

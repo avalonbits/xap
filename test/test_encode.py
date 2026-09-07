@@ -146,7 +146,10 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(e.exception.code, 0x22)        # XAP_EVALUE
 
     def test_a_mode_that_does_not_exist_is_rejected(self):
-        for source in ("ldx $34,x", "sta #$12", "lda a", "tax $34", "inx #$01"):
+        # "lda a" is not here any more: since labels arrived, a lone A is
+        # only the accumulator for the six instructions that have that
+        # mode, and for everything else it is a label of that name.
+        for source in ("ldx $34,x", "sta #$12", "tax $34", "inx #$01"):
             with self.assertRaises(Error, msg=source) as e:
                 self.xap.assemble(source)
             self.assertEqual(e.exception.code, 0x08, source)   # XAP_EMODE
@@ -246,11 +249,15 @@ class TestEncoding(unittest.TestCase):
             self.xap.assemble("bcc $1004\nbcc $1004\n", origin=0x1000),
             bytes([0x90, 0x02, 0x90, 0x00]))
 
-    def test_a_word_that_is_not_an_instruction_is_rejected(self):
-        for source in ("frob", "ld", "ldaa", "rmb3x", "x"):
-            with self.assertRaises(Error, msg=source) as e:
-                self.xap.assemble(source)
-            self.assertEqual(e.exception.code, 0x20, source)  # XAP_EMNEMONIC
+    def test_a_word_that_is_not_an_instruction_is_a_label(self):
+        """Which is how a label is told from an instruction at all.
+
+        Robson's spec puts it plainly: a label is an unknown mnemonic, or a
+        word ending in a colon. So these define labels rather than failing,
+        and the failure only comes at the end for the one never defined.
+        """
+        for source in ("frob", "ld", "ldaa", "rmb3x", "x", "frob:"):
+            self.assertEqual(self.xap.assemble(source), b"", source)
 
     def test_a_bad_bit_number_is_rejected(self):
         for source in ("rmb8 $34", "rmb $34", "bbr9 $34,$1003"):

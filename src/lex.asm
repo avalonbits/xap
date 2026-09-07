@@ -181,6 +181,8 @@ xapNumber:
         stz     xapValue
         stz     xapValue+1
 
+        stz     xapForward
+
         lda     (xapSrc),y
         cmp     #'$'
         beq     _xnHex
@@ -189,12 +191,14 @@ xapNumber:
         cmp     #''''
         beq     _xnViaChar
 
-; ---- decimal ----------------------------------------------------------
+; ---- decimal, or a label ----------------------------------------------
 
         tax
         lda     xapHexDigit,x
         cmp     #10
         bcc     _xnDecimal          ; a number has to start with a digit
+        lda     xapLetter,x
+        bne     _xnViaLabel         ; and a name with a letter
 
 _xnBad:
         lda     #XAP_EEXPR
@@ -207,6 +211,8 @@ _xnViaBinary:
         jmp     _xnBinary
 _xnViaChar:
         jmp     _xnChar
+_xnViaLabel:
+        jmp     xapLabelOperand
 
 _xnDecimal:
         jsr     xapMul10
@@ -450,4 +456,98 @@ xapIsIdent:
         rts
 _xiiNo:
         clc
+        rts
+
+; -----------------------------------------------------------------------
+;   Reads an identifier at the cursor into XAP_LABEL, upper cased, and
+;   sets xapLabelLen. CC on success, CS with an error in A.
+;
+;   A name starts with a letter and runs on through letters and digits.
+;   The ROM assembler also allows underscore, at sign and period, and a
+;   leading underscore or at sign makes it local -- neither of those is
+;   here yet.
+; -----------------------------------------------------------------------
+
+xapReadLabel:
+        ldx     #0
+        lda     (xapSrc),y
+        stx     xapLabelLen
+        tax
+        lda     xapLetter,x
+        beq     _xrlBad             ; has to start with a letter
+
+        ldx     #0
+_xrlLoop:
+        lda     (xapSrc),y
+        stx     xapLabelLen         ; so an exit anywhere leaves it right
+        tax
+        lda     xapClass,x
+        and     #XAP_CLASS_IDENT
+        beq     _xrlDone
+        txa
+        jsr     xapUpper            ; FOO and foo are one label, which is
+        ldx     xapLabelLen         ; what the ROM assembler does
+        sta     XAP_LABEL,x
+        inx
+        cpx     #XAP_LABEL_MAX
+        bcs     _xrlTooLong
+        iny
+        bra     _xrlLoop
+
+_xrlDone:
+        lda     xapLabelLen
+        beq     _xrlBad
+        clc
+        rts
+
+_xrlBad:
+_xrlTooLong:
+        lda     #XAP_ELABEL
+        sec
+        rts
+
+; -----------------------------------------------------------------------
+;   An operand that names a label.
+;
+;   A label already defined gives its value straight away. One that is not
+;   leaves xapForward set, and from there the value is a hole: the mode is
+;   forced wide, because the width cannot depend on a value nobody knows
+;   yet, and the encoder records where the hole went.
+; -----------------------------------------------------------------------
+
+xapLabelOperand:
+        jsr     xapReadLabel
+        bcs     _xloExit
+        sty     xapLabelPos         ; the lookup walks records with Y
+        jsr     xapSymFind
+        bcc     _xloKnown       ; already there, defined or not
+        lda     xapSym              ; a full heap comes back as a null
+        ora     xapSym+1
+        bne     _xloPending
+        lda     #XAP_EMEMORY
+        sec
+        rts
+
+_xloKnown:
+        ldy     #XAP_SYM_FLAGS
+        lda     (xapSym),y
+        bpl     _xloPending
+
+        ldy     #XAP_SYM_VALUE      ; its value is settled
+        lda     (xapSym),y
+        sta     xapValue
+        iny
+        lda     (xapSym),y
+        sta     xapValue+1
+        ldy     xapLabelPos         ; xapSymFind does not touch the cursor,
+        clc                         ; but the lookup used Y as an index
+        rts
+
+_xloPending:
+        stz     xapValue            ; a hole, for now
+        stz     xapValue+1
+        inc     xapForward
+        ldy     xapLabelPos
+        clc
+_xloExit:
         rts

@@ -21,6 +21,12 @@ xapOperand:
         stz     xapTarget
         stz     xapTarget+1
 
+        ; Cleared here as well as in xapNumber, because an instruction
+        ; with no operand never reaches xapNumber -- and a NOP after a
+        ; forward reference would otherwise inherit the flag and be told
+        ; its mode was too narrow for a value it does not have.
+        stz     xapForward
+
         .skipspace
         .atend
         bne     _xoImplied          ; nothing there at all
@@ -31,18 +37,22 @@ xapOperand:
         cmp     #'('
         beq     _xoIndirect
 
-        ; A letter here can only be the accumulator's "A". There are no
-        ; symbols yet, so any other word is a syntax error rather than a
-        ; name to resolve later.
+        ; A letter starts either the accumulator's "A" or a label, and a
+        ; lone A is the only thing that is not a label.
         tax
         lda     xapLetter,x
         beq     _xoAddressNear      ; not a letter, so it is a number
-        cmp     #1                  ; A is the first letter
-        bne     _xoSyntaxNear
+        cmp     #1
+        bne     _xoAddressNear      ; some other word: a label
+        lda     xapFlags            ; and a lone A is only the accumulator
+        and     #XAP_FLAG_ACC       ; for the six that have that mode --
+        beq     _xoAddressNear      ; "jmp a" is a jump to a label named a
         iny
-        lda     (xapSrc),y          ; "AB" is not the accumulator
+        lda     (xapSrc),y
         jsr     xapIsIdent
-        bcs     _xoSyntaxNear
+        bcc     _xoImplied          ; a bare A
+        dey                         ; "AB..." is a label after all
+        bra     _xoAddressNear
 
 _xoImplied:
         lda     #XAP_MODE_IMPACC
@@ -159,6 +169,9 @@ _xoIndexed:
         and     #XAP_FLAG_BITOP
         beq     _xoSyntax
 
+        lda     xapForward          ; the fixup can only wait on one
+        bne     _xoSyntaxMid        ; symbol, and the target is the one
+                                    ; that needs it
         lda     xapValue+1          ; the bit address, kept while the
         pha                         ; target is read over the top of it
         lda     xapValue

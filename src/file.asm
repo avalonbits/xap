@@ -350,10 +350,14 @@ xapOpenObject:
         jsr     OPEN
         bcs     _xooFailed
 
-        lda     #<XAP_OBJBUF
+        lda     #<XAP_IMAGE         ; the whole object is built in memory
         sta     xapOut
-        lda     #>XAP_OBJBUF
+        lda     #>XAP_IMAGE
         sta     xapOut+1
+        lda     #<XAP_IMAGE_END
+        sta     xapOutTop
+        lda     #>XAP_IMAGE_END
+        sta     xapOutTop+1
         clc
         rts
 
@@ -363,65 +367,61 @@ _xooFailed:
         rts
 
 ; -----------------------------------------------------------------------
-;   Writes the object buffer out and empties it.
+;   Writes the finished image out.
 ;
-;   Called from inside xapPut, which is called from the middle of
-;   encoding an instruction, so it preserves X and Y and cannot return an
-;   error up the chain. A failure is recorded in xapObjError instead, and
-;   the top level reports it once the line is finished.
+;   The object is not spilled as it is produced, because a fixup has to be
+;   able to write back into code already emitted and a file that has been
+;   written cannot be. So this runs once, at the end, over everything.
 ; -----------------------------------------------------------------------
 
-xapObjFlush:
-        phx
-        phy
-
-        lda     xapOut              ; how much is waiting
+xapObjWrite:
+        lda     xapOut              ; how much was produced
         sec
-        sbc     #<XAP_OBJBUF
+        sbc     xapImage
         sta     xapTmp
         lda     xapOut+1
-        sbc     #>XAP_OBJBUF
+        sbc     xapImage+1
         sta     xapTmp+1
         lda     xapTmp
         ora     xapTmp+1
-        beq     _xofEmpty
+        beq     _xowEmpty
 
         ldx     #XAP_LFN_OBJECT
         jsr     CHKOUT
-        bcs     _xofFailed
+        bcs     _xowFailed
 
-        lda     #<XAP_OBJBUF
+        lda     xapImage
         sta     xapFill
-        lda     #>XAP_OBJBUF
+        lda     xapImage+1
         sta     xapFill+1
 
-_xofLoop:
+_xowLoop:
         lda     xapTmp
         ora     xapTmp+1
-        beq     _xofEnd
+        beq     _xowEnd
 
         lda     xapTmp+1            ; at most one block a call
-        bne     _xofBlock
+        bne     _xowBlock
         lda     xapTmp
         cmp     #XAP_BLOCK
-        bcc     _xofSend
-_xofBlock:
+        bcc     _xowSend
+_xowBlock:
         lda     #XAP_BLOCK
 
-_xofSend:
+_xowSend:
         pha                         ; the fallback needs the request
         ldx     xapFill
         ldy     xapFill+1
         clc
         jsr     MCIOUT
-        bcs     _xofByteAtATime
+        bcs     _xowByteAtATime
 
         pla                         ; X,Y is what actually went
         stx     xapWrote
         sty     xapWrote+1
-        bra     _xofAccount
+        bra     _xowAccount
 
-_xofByteAtATime:
+_xowByteAtATime:
         pla
         sta     xapWrote
         stz     xapWrote+1
@@ -437,14 +437,14 @@ _xobLoop:
 +       dex
         bne     _xobLoop
 
-        lda     xapFill             ; the loop moved xapFill itself, so
-        sec                         ; put it back for the common step
+        lda     xapFill             ; the loop moved xapFill itself, so put
+        sec                         ; it back for the common step
         sbc     xapWrote
         sta     xapFill
         bcs     +
         dec     xapFill+1
 +
-_xofAccount:
+_xowAccount:
         lda     xapFill             ; xapFill += written
         clc
         adc     xapWrote
@@ -460,20 +460,24 @@ _xofAccount:
         lda     xapTmp+1
         sbc     xapWrote+1
         sta     xapTmp+1
-        bra     _xofLoop
+        bra     _xowLoop
 
-_xofFailed:
+_xowFailed:
         lda     #XAP_ENOFILE
         sta     xapObjError
-_xofEnd:
+_xowEnd:
         jsr     CLRCHN
-_xofEmpty:
-        lda     #<XAP_OBJBUF        ; empty again either way
-        sta     xapOut
-        lda     #>XAP_OBJBUF
-        sta     xapOut+1
-        ply
-        plx
+_xowEmpty:
+        rts
+
+; -----------------------------------------------------------------------
+;   The image is full. There is nowhere to put the rest, and no way to
+;   carry on, so this only records it; the top level reports it.
+; -----------------------------------------------------------------------
+
+xapObjOverflow:
+        lda     #XAP_EMEMORY
+        sta     xapObjError
         rts
 
 ; -----------------------------------------------------------------------
@@ -482,7 +486,7 @@ _xofEmpty:
 ; -----------------------------------------------------------------------
 
 xapCloseObject:
-        jsr     xapObjFlush
+        jsr     xapObjWrite
         jsr     CLRCHN
         lda     #XAP_LFN_OBJECT
         jsr     CLOSE
