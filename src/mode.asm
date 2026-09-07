@@ -49,8 +49,8 @@ xapOperand:
         beq     _xoAddressNear      ; "jmp a" is a jump to a label named a
         iny
         lda     (xapSrc),y
-        jsr     xapIsIdent
-        bcc     _xoImplied          ; a bare A
+        .isident
+        beq     _xoImplied          ; a bare A
         dey                         ; "AB..." is a label after all
         bra     _xoAddressNear
 
@@ -234,8 +234,8 @@ xapRegister:
 
         iny
         lda     (xapSrc),y
-        jsr     xapIsIdent
-        bcs     _xrBacktrack
+        .isident
+        bne     _xrBacktrack
         clc
         rts
 

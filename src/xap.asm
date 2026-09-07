@@ -161,6 +161,21 @@ XAP_ELABEL    = $25         ; label name missing or too long
 ;   line, on a character the caller had usually just read.
 ; -----------------------------------------------------------------------
 
+; -----------------------------------------------------------------------
+;   Z clear when the character in A could continue an identifier: a letter
+;   or a digit. Leaves it in X as well.
+;
+;   A macro because it is two loads behind a call, and the call is most of
+;   the cost -- it runs once for every mnemonic read and twice for every
+;   index register.
+; -----------------------------------------------------------------------
+
+isident .macro
+        tax
+        lda     xapClass,x
+        and     #XAP_CLASS_IDENT
+        .endm
+
 atend .macro
         tax
         lda     xapClass,x

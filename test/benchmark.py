@@ -128,8 +128,9 @@ def report(paths):
         size = len(source)
         rows = measured[name]
 
+        lines = source.count("\n")
         print("\nxap phase profile -- %s" % name)
-        print("  %d lines, %d bytes\n" % (source.count("\n"), size))
+        print("  %d lines, %d bytes\n" % (lines, size))
         print("  %-34s %10s %10s %8s %7s"
               % ("phase", "cycles", "of which", "cyc/byte", "share"))
         print("  %-34s %10s %10s %8s %7s"
@@ -149,8 +150,15 @@ def report(paths):
         print("  %-34s %10d %10s %8.1f %6.1f%%"
               % ("total, assembling", net, "", net / size, 100.0))
         print("  %-34s %10d" % ("fixed cost, opening and closing", rows[-1][2]))
-        print("\n  %.1f cycles/byte -- %.3fs for %d bytes on an 8MHz X16"
-              % (net / size, net / 8e6, size))
+        # Cycles a byte is what someone waiting for a build feels, but it
+        # moves when the file's composition does and not only when the
+        # assembler does: comments and indentation are cheap bytes, so a
+        # file with more of them reads as faster per byte while doing the
+        # same work. Cycles a line does not move for that reason, so the
+        # two together say whether a change was real.
+        print("\n  %.1f cycles/byte, %.0f cycles/line -- %.3fs for %d bytes "
+              "on an 8MHz X16"
+              % (net / size, net / lines, net / 8e6, size))
 
 
 def main():

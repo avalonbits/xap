@@ -445,6 +445,21 @@ def emit(table, out):
     # The character classes the line parser asks about, so that "does this end
     # the line" is one load and one AND rather than four compares in a
     # subroutine.
+    # Upper cased, but only for a letter or a digit -- anything else comes
+    # back zero, which is also how "this ends the name" is said. One load
+    # answers both questions, where reading a label used to ask the class
+    # table and then call a routine to fold the case, per character.
+    w("; Upper case of a letter or digit, 0 for anything that is neither.\n")
+    w("xapIdentUpper:\n")
+    ident = [0] * 256
+    for i in range(26):
+        ident[ord('A') + i] = ord('A') + i
+        ident[ord('a') + i] = ord('A') + i
+    for i in range(10):
+        ident[ord('0') + i] = ord('0') + i
+    w(wrap(ident))
+    w("\n")
+
     w("XAP_CLASS_SPACE = $01           ; space or tab\n")
     w("XAP_CLASS_EOL   = $02           ; NUL, newline, or a comment\n")
     w("XAP_CLASS_IDENT = $04           ; letter or digit\n")
@@ -488,8 +503,21 @@ def emit(table, out):
       % (len(names), average))
     w("XAP_HASH_SHIFT = %d\n" % shift)
     w("XAP_HASH_EMPTY = $FF\n")
-    w("xapHashTable:\n")
-    w(wrap(slots))
+
+    # The key lives in the hash table, not behind a slot index in it. A probe
+    # then reads the key it is comparing against directly, where it used to
+    # read a slot number and then index a second pair of tables with it --
+    # and that second index needed a register the source cursor was using, so
+    # every lookup saved and restored Y around itself.
+    #
+    # A packed key is fifteen bits, so a high byte with bit 7 set cannot be
+    # one and is free to mean an empty slot.
+    w("xapHashKeyLo:\n")
+    w(wrap([pack(names[i]) & 0xFF if i != 0xFF else 0 for i in slots]))
+    w("xapHashKeyHi:\n")
+    w(wrap([pack(names[i]) >> 8 if i != 0xFF else 0xFF for i in slots]))
+    w("xapHashSlot:\n")
+    w(wrap([i if i != 0xFF else 0 for i in slots]))
     w("\n")
 
     w("; Packed keys, for confirming a hit and rejecting a miss.\n")

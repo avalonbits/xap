@@ -91,8 +91,8 @@ _xmPlain:
         ; A letter or digit still here means the word was longer than the
         ; mnemonic -- LDAX, or RMB3X -- and is not this instruction.
         lda     (xapSrc),y
-        jsr     xapIsIdent
-        bcs     _xmNotAWord
+        .isident
+        bne     _xmNotAWord
         clc
         rts
 
@@ -118,13 +118,14 @@ _xmNotAWord:
 ;   a one in ten thousand shot, and finding one would cost more complexity
 ;   than the quarter of a probe it saves.
 ;
-;   The slot number is passed back through xapSlot because Y is the source
-;   cursor and has to be given back untouched.
+;   The table holds the keys themselves, so a probe compares against what
+;   it just loaded. Holding slot numbers meant indexing a second pair of
+;   tables to get the key, and that second index wanted a register the
+;   source cursor was already using -- so every lookup saved and restored
+;   Y around itself for the sake of it.
 ; -----------------------------------------------------------------------
 
 xapFind:
-        phy
-
         lda     xapKey+1
         .if XAP_HASH_SHIFT >= 1
         asl     a
@@ -139,27 +140,25 @@ xapFind:
         tax
 
 _xfProbe:
-        ldy     xapHashTable,x      ; slots are 0..69, so an empty one is
-        bmi     _xfMissing          ; the only value with bit 7 set
-        lda     xapKey
-        cmp     xapKeyLo,y
+        lda     xapHashKeyHi,x      ; a key is fifteen bits, so bit 7 set
+        bmi     _xfMissing          ; is the empty slot marker
+        cmp     xapKey+1
         bne     _xfNext
-        lda     xapKey+1
-        cmp     xapKeyHi,y
+        lda     xapHashKeyLo,x
+        cmp     xapKey
         beq     _xfFound
 _xfNext:
         inx                         ; the table always keeps an empty slot,
         bra     _xfProbe            ; so a miss cannot circle forever
 
 _xfFound:
-        sty     xapSlot
-        ply
-        ldx     xapSlot
+        lda     xapHashSlot,x
+        sta     xapSlot
+        tax
         clc
         rts
 
 _xfMissing:
-        ply
         sec
         rts
 
@@ -481,12 +480,13 @@ _xrlLoop:
         lda     (xapSrc),y
         stx     xapLabelLen         ; so an exit anywhere leaves it right
         tax
-        lda     xapClass,x
-        and     #XAP_CLASS_IDENT
+        ; One load says both whether this still belongs to the name and
+        ; what it is upper cased -- FOO and foo are one label, as the ROM
+        ; assembler has it. Nothing that belongs to a name folds to zero,
+        ; so zero is free to mean the end of one.
+        lda     xapIdentUpper,x
         beq     _xrlDone
-        txa
-        jsr     xapUpper            ; FOO and foo are one label, which is
-        ldx     xapLabelLen         ; what the ROM assembler does
+        ldx     xapLabelLen
         sta     XAP_LABEL,x
         inx
         cpx     #XAP_LABEL_MAX

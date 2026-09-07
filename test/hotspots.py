@@ -42,16 +42,22 @@ RETURN = 0xBF00
 SOURCE = 0xC000
 ZP = 0x22
 
-CORPUS = os.path.join(ROOT, "build", "isa_real.asm")
+CORPUS = os.path.join(ROOT, "build", "isa_small.asm")
 
 # Stepping in Python runs about a hundred thousand instructions a second, so
 # this takes a prefix of the benchmark corpus rather than all of it. The corpus
 # cycles through the instruction set in turn, so any prefix of more than a few
 # hundred lines holds every form in much the same proportion as the whole.
-LINES = int(os.environ.get("HOTSPOT_LINES", "1000"))
+LINES = int(os.environ.get("HOTSPOT_LINES", "100000"))
 
 
 def corpus(lines):
+    """The whole file, not a prefix of it.
+
+    Cutting a corpus that has labels leaves references to labels past the cut,
+    and the assembler stops on the first of them that is never defined. So
+    this reads a corpus small enough to profile whole.
+    """
     path = sys.argv[1] if len(sys.argv) > 1 else CORPUS
     with open(path) as fh:
         return "".join(fh.readlines()[:lines])
