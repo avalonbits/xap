@@ -9,6 +9,17 @@ Seeded, so a failure is reproducible and can be pasted straight into
 test_labels.py as a regression. FUZZ_SEED picks a different run and FUZZ_CASES
 makes it longer.
 
+Run at two origins. Above the zero page, every forward reference is settled as
+absolute the moment it is read, because a label defined later cannot be below
+the program counter. Inside the zero page it cannot be, so the assembler
+guesses narrow and widens when the guess turns out wrong -- shifting the image
+and moving every label above the shift. That path only exists at a zero page
+origin, and it is where the interesting failures are.
+
+Branch reachability is worked out with the wide form of every instruction,
+which is an upper bound on the distance: shrinking only brings a target
+closer, so a branch the generator believes is in range really is.
+
 Programs are generated so that both assemblers must agree on them, which rules
 out three things on purpose:
 
@@ -40,6 +51,7 @@ SEED = int(os.environ.get("FUZZ_SEED", "20260907"))
 CASES = int(os.environ.get("FUZZ_CASES", "150"))
 
 ORIGIN = 0x1000
+ZP_ORIGIN = 0x0010
 
 # (template, length). {L} takes a label, {B} a byte, {W} a word.
 INSTRUCTIONS = [
@@ -67,7 +79,7 @@ def to_tass(source):
                   flags=re.I)
 
 
-def program(rng):
+def program(rng, origin=ORIGIN):
     """A random program, and the labels it defines.
 
     Built in two passes over a list of items rather than as text, because a
@@ -107,7 +119,7 @@ def program(rng):
             items.append(("plain", text, length, None))
 
     # Where everything lands, and so where every label is.
-    pc = ORIGIN
+    pc = origin
     address = []
     for kind, text, length, name in items:
         address.append(pc)
@@ -188,13 +200,13 @@ class TestFuzz(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.dir, ignore_errors=True)
 
-    def tass(self, source):
+    def tass(self, source, origin=ORIGIN):
         src = os.path.join(self.dir, "s.asm")
         out = os.path.join(self.dir, "s.bin")
         if os.path.exists(out):
             os.unlink(out)
         with open(src, "w") as fh:
-            fh.write("* = $%04X\n" % ORIGIN + to_tass(source))
+            fh.write("* = $%04X\n" % origin + to_tass(source))
         r = subprocess.run([TASS, "--mw65c02", "-q", "-b", "-o", out, src],
                            capture_output=True)
         if r.returncode != 0:
@@ -202,33 +214,43 @@ class TestFuzz(unittest.TestCase):
         with open(out, "rb") as fh:
             return fh.read(), None
 
-    def test_random_programs_match_64tass(self):
-        rng = random.Random(SEED)
+    def check(self, origin):
+        rng = random.Random(SEED + origin)
         checked = 0
         for case in range(CASES):
-            source, labels = program(rng)
+            source, labels = program(rng, origin)
             if source is None:
                 continue
 
-            want, err = self.tass(source)
+            want, err = self.tass(source, origin)
             if want is None:
-                self.fail("64tass rejected a generated program (seed %d, "
-                          "case %d):\n%s\n%s" % (SEED, case, source, err))
+                self.fail("64tass rejected a generated program (origin $%04X, "
+                          "seed %d, case %d):\n%s\n%s"
+                          % (origin, SEED, case, source, err))
 
             try:
-                got = self.xap.assemble(source, origin=ORIGIN)
+                got = self.xap.assemble(source, origin=origin)
             except Error as e:
-                self.fail("xap failed with $%02X (seed %d, case %d):\n%s"
-                          % (e.code, SEED, case, source))
+                self.fail("xap failed with $%02X (origin $%04X, seed %d, "
+                          "case %d):\n%s" % (e.code, origin, SEED, case, source))
 
             self.assertEqual(
                 got, want,
-                "seed %d, case %d:\n%s\nxap  %s\n64tass %s"
-                % (SEED, case, source, got.hex(" "), want.hex(" ")))
+                "origin $%04X, seed %d, case %d:\n%s\nxap    %s\n64tass %s"
+                % (origin, SEED, case, source, got.hex(" "), want.hex(" ")))
             checked += 1
 
         self.assertGreater(checked, CASES // 2,
                            "too many generated programs were discarded")
+
+    def test_random_programs_match_64tass(self):
+        """Above the zero page, where every forward reference is absolute."""
+        self.check(ORIGIN)
+
+    def test_random_programs_match_64tass_in_zero_page(self):
+        """Inside it, where the size of a forward reference has to be
+        guessed and the guess sometimes has to be taken back."""
+        self.check(ZP_ORIGIN)
 
 
 if __name__ == "__main__":
