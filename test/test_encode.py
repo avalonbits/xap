@@ -205,6 +205,41 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(self.xap.assemble("nop\r\nnop\r\n"),
                          bytes([0xEA, 0xEA]))
 
+    def test_comments(self):
+        """A semicolon ends the line, wherever it is and whatever follows."""
+        for source, want in (
+            ("nop ; a comment", [0xEA]),
+            ("nop;no space before it", [0xEA]),
+            ("; nothing but a comment", []),
+            ("      ; indented, still nothing", []),
+            ("nop ; one ; two ; three", [0xEA]),
+            ("lda #$12 ; c\nnop ; c\n", [0xA9, 0x12, 0xEA]),
+            ("nop ; before a CRLF\r\nnop", [0xEA, 0xEA]),
+        ):
+            self.assertEqual(self.xap.assemble(source), bytes(want), source)
+
+    def test_control_characters_inside_a_comment(self):
+        """The comment scan passes over anything below space that is not a
+        line ending, which is how a tab in a comment stays in the comment."""
+        for source, want in (
+            ("nop ;\tcomment with a tab\nnop", [0xEA, 0xEA]),
+            ("nop ; and a formfeed\x0c here\nnop", [0xEA, 0xEA]),
+            ("nop ;\t\t\t\nnop", [0xEA, 0xEA]),
+            ("nop ; running to the end of the text", [0xEA]),
+            ("\t; a tab-indented comment line\nnop", [0xEA]),
+        ):
+            self.assertEqual(self.xap.assemble(source), bytes(want), repr(source))
+
+    def test_a_semicolon_in_quotes_is_not_a_comment(self):
+        """The one case where the rule is not just "semicolon ends it".
+
+        The ROM assembler's manual is explicit that a semicolon delimits a
+        comment only outside quotes, so this has to keep working.
+        """
+        self.assertEqual(self.xap.assemble("lda #';'"), bytes([0xA9, 0x3B]))
+        self.assertEqual(self.xap.assemble("lda #';' ; and a real one"),
+                         bytes([0xA9, 0x3B]))
+
     def test_several_instructions_advance_the_program_counter(self):
         """Each branch is relative to its own address, not the first."""
         self.assertEqual(

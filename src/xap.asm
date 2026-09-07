@@ -318,14 +318,26 @@ xapFail:
 ;   the cursor back into xapSrc.
 ; -----------------------------------------------------------------------
 
+; Nearly a third of real source is comment text, and all of it comes
+; through here one character at a time. Everything that ends a line -- the
+; NUL, CR and LF -- is below space, and every character a comment is made
+; of is not, so one compare passes over the body and the four-way test is
+; only paid once at the end of it.
 xapEndLine:
         lda     (xapSrc),y
-        beq     _xelFold            ; end of the window: stop on the NUL
+        cmp     #' '
+        bcc     _xelControl
+        iny                         ; a comment body, or trailing space
+        bra     xapEndLine
+
+_xelControl:
+        cmp     #0                  ; the compare above settled only that
+        beq     _xelFold            ; this is below space
         cmp     #13
         beq     _xelEol
         cmp     #10
         beq     _xelEol
-        iny                         ; a comment body, or trailing space
+        iny                         ; a tab, or some other control byte
         bra     xapEndLine
 
 _xelEol:

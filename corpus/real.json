@@ -3,6 +3,14 @@
  "listings": 132,
  "instructions": 16716,
  "forms": 130,
+ "shape": {
+  "lines": 80931,
+  "blank": 0.0985,
+  "comment_only": 0.1324,
+  "trailing_comment": 0.0705,
+  "comment_chars": 0.3126,
+  "mean_comment_length": 27.4
+ },
  "counts": {
   "ADC/abs": 17,
   "ADC/abx": 5,
