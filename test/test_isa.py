@@ -1,0 +1,96 @@
+"""Guards the generated instruction table.
+
+src/isa.inc is committed rather than built on the fly, so it can rot: a hand
+edit, a change to the generator, or a different 64tass could all leave it
+saying something the assembler then faithfully encodes. Re-deriving the table
+costs under a second for the whole instruction set, so the test does exactly
+what the generator does and requires the answer to be identical.
+
+It also re-checks the invariants directly rather than trusting that the
+generator checked them, since a generator bug would otherwise be committed
+along with the table it produced.
+"""
+
+import io
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
+
+import gen_isa as g
+
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+ISA = os.path.join(ROOT, "src", "isa.inc")
+TASS = os.environ.get("TASS", "64tass")
+
+# The W65C02S leaves 44 of the 256 opcodes reserved.
+OPCODE_COUNT = 212
+
+
+class TestISA(unittest.TestCase):
+    table = None
+
+    @classmethod
+    def setUpClass(cls):
+        tass = g.Tass(TASS)
+        if tass.encode("nop") is None:
+            raise unittest.SkipTest("64tass not available (set $TASS)")
+        cls.table = g.probe(tass)
+
+    def test_committed_file_matches_the_generator(self):
+        """The committed table is what the generator produces, byte for byte."""
+        buf = io.StringIO()
+        g.emit(dict(self.table), buf)
+        with open(ISA) as fh:
+            self.assertEqual(fh.read(), buf.getvalue(),
+                             "src/isa.inc is stale -- run 'make isa'")
+
+    def test_every_opcode_is_present_and_unique(self):
+        seen = {}
+        for name, row in self.table.items():
+            for mode, opcode in row.items():
+                self.assertNotIn(
+                    opcode, seen,
+                    "$%02X produced by both %s and %s"
+                    % (opcode, seen.get(opcode), name))
+                seen[opcode] = name
+        self.assertEqual(len(seen), OPCODE_COUNT)
+
+    def test_py65_agrees(self):
+        checked = g.crosscheck(dict(self.table))
+        # py65 has no BBRx/BBSx and no STP, so it can confirm 195 of the 212.
+        self.assertEqual(checked, 195)
+
+    def test_modes_are_the_length_they_claim(self):
+        """Each mode's declared length is what 64tass actually emits."""
+        tass = g.Tass(TASS)
+        for name, template, length in g.MODES:
+            if template is None:
+                continue
+            # LDA reaches every mode with an operand; the bare forms are
+            # checked through NOP and ASL instead.
+            for m in ("lda", "nop", "asl", "jmp", "bcc", "ldx"):
+                code = tass.encode(template.format(m=m))
+                if code is not None and len(code) == length:
+                    break
+            else:
+                self.fail("no probe reached mode %s" % name)
+
+    def test_bit_families_stay_arithmetic(self):
+        """RMB3 is RMB0 plus 3*16, and the table depends on that."""
+        tass = g.Tass(TASS)
+        for stem, mode in g.BITOPS.items():
+            first = None
+            for bit in range(8):
+                line = ("%s %d,$34" if mode == "zp" else "%s %d,$34,*") % (stem, bit)
+                code = tass.encode(line)
+                self.assertIsNotNone(code, "%s%d did not assemble" % (stem, bit))
+                if first is None:
+                    first = code[0]
+                self.assertEqual(code[0], first + bit * 0x10,
+                                 "%s%d breaks the arithmetic rule" % (stem, bit))
+
+
+if __name__ == "__main__":
+    unittest.main()
