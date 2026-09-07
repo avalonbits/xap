@@ -1,3 +1,11 @@
 build/
 __pycache__/
 *.pyc
+
+# Working notes, not part of the project.
+.internal/
+
+# Third-party tools that cannot be redistributed from here.
+# tools/setup-toolchain.sh fetches both; see toolchain/NOTICE.md.
+toolchain/bin/64tass
+toolchain/rom/

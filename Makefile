@@ -1,9 +1,14 @@
 # xap -- a 65C02 assembler for the Commander X16, written in 65C02 assembly.
 #
-# Everything needed to build and test is committed under toolchain/, so a fresh
-# clone needs no network and nothing installed. tools/setup-toolchain.sh is
-# what produced it and what reproduces it; the binaries there are Linux
-# x86-64, so on anything else run that script first.
+# Most of what is needed to build and test is committed under toolchain/. Two
+# pieces are not, because this repository is public and they are not ours to
+# redistribute -- 64tass is GPL-2.0 and rom.bin is someone else's KERNAL build
+# -- so run this once after cloning:
+#
+#   tools/setup-toolchain.sh
+#
+# It fetches those two and reproduces the rest from pinned versions. The
+# committed binaries are Linux x86-64, so on anything else run it anyway.
 #
 # Any of the four can be pointed elsewhere:
 #
@@ -58,14 +63,23 @@ all: $(BUILDDIR)/xap.bin $(BUILDDIR)/bench.bin
 # binary, which is a failure mode that looks exactly like a passing test.
 SOURCES = $(wildcard $(SRCDIR)/*.asm) $(SRCDIR)/isa.inc
 
-$(BUILDDIR)/xap.bin: $(SOURCES) | $(BUILDDIR)
+# 64tass is fetched rather than committed, so say what to do about it rather
+# than letting the shell report a missing command.
+.PHONY: need-tass
+need-tass:
+	@command -v $(TASS) >/dev/null 2>&1 || { \
+		echo "64tass not found at '$(TASS)'."; \
+		echo "Run tools/setup-toolchain.sh to fetch it, or pass TASS=..."; \
+		exit 1; }
+
+$(BUILDDIR)/xap.bin: $(SOURCES) | $(BUILDDIR) need-tass
 	$(TASS) $(TASSFLAGS) -b -D CODEADDR=\$$$(CODEADDR) \
 		-o $@ -L $(BUILDDIR)/xap.lst -l $(BUILDDIR)/xap.labels \
 		$(SRCDIR)/xap.asm
 
 # The emulator driver: xap plus a timing stub, built as one binary so the
 # harness can read every address it needs out of the label file.
-$(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR)
+$(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR) need-tass
 	$(TASS) $(TASSFLAGS) -b -D CODEADDR=\$$$(CODEADDR) \
 		-o $@ -L $(BUILDDIR)/bench.lst -l $(BUILDDIR)/bench.labels \
 		$(TESTDIR)/bench.asm
@@ -92,7 +106,9 @@ $(BUILDDIR):
 isa:
 	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_isa.py -o $(SRCDIR)/isa.inc
 
-test: all
+# The corpora are a dependency, not an optional extra: the end to end test
+# skips itself without them, and a test that skips is not a test.
+test: all $(CORPORA)
 	$(PYENV) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
 # Per-routine cycle counts, stepped under py65. No emulator needed.

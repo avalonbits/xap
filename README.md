@@ -27,12 +27,18 @@ At the moment that is 1.1KB of code and 1.4KB of tables. A ROM bank is 16KB.
 
 ## Building
 
-Two host tools, neither vendored:
+Run this once after cloning:
 
 ```
-sudo apt install 64tass      # builds xap, and is the test oracle
-pip install py65             # runs xap's own code on the host
+tools/setup-toolchain.sh
 ```
+
+Most of the toolchain is committed under `toolchain/`. Two pieces are not,
+because this repository is public and they are not ours to redistribute —
+64tass is GPL-2.0, which would oblige us to offer its source alongside the
+binary, and the ROM image is someone else's KERNAL build. The script fetches
+those two and reproduces the rest from pinned versions. See
+`toolchain/NOTICE.md`.
 
 ```
 make          # build/xap.bin and build/bench.bin
@@ -49,9 +55,9 @@ fast and they cover encoding, but they never touch the KERNAL, so they say
 nothing about the file reader and nothing about speed. For that there is a
 second suite that runs the same code on the real machine.
 
-Build [x16emu](https://github.com/X16Community/x16-emulator) and point the
-tests at it — there is no packaged build to depend on, so the emulator tests
-skip themselves when it is missing:
+`tools/setup-toolchain.sh` builds x16emu and fetches a ROM, and the Makefile
+finds both, so `make test` covers this too. The emulator tests skip themselves
+if it has not been run. To use your own build instead:
 
 ```
 make test X16EMU=/path/to/x16emu X16ROM=/path/to/rom.bin
