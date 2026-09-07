@@ -61,6 +61,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gen_isa as g
 
+# Four spaces. Real source overwhelmingly uses a tab instead -- counted over
+# x16-rom's instruction lines, 57.5% a tab against 0.2% four spaces -- and
+# changing it is worth doing, but on its own and not folded into a change
+# that is measured against this corpus. It moves cycles a byte by twenty
+# without moving the work at all, because whitespace is cheap bytes and
+# taking three of them off every line shrinks the denominator.
 INDENT = "    "
 
 # The modes whose operand can be a code label. The rest need a value in zero
@@ -86,6 +92,11 @@ LABEL_REFERENCE_RATE = 0.9
 # calls nearby and loops locally; this keeps the number of holes held open at
 # once in the same range that real source produces.
 LABEL_REACH = 1024
+
+# What the object image holds in the flat test memory map, $4000 to $9E00.
+# A corpus that assembles to more than this cannot be assembled at all, and
+# saying so here is better than an out-of-memory error from the far end.
+IMAGE_LIMIT = 0x9E00 - 0x4000
 
 # Comment text for isa_real. What matters is the length, since a comment is
 # scanned character by character and never parsed, but real-looking text keeps
@@ -437,7 +448,10 @@ def main():
           "%.0f%% of instructions take a name"
           % (len(used), labels, 100.0 * labels / lines,
              100.0 * named / max(instrs, 1)))
-    print("  object code $1000 to $%04X" % end)
+    print("  object code $1000 to $%04X, %d bytes" % (end, end - 0x1000))
+    if end - 0x1000 > IMAGE_LIMIT:
+        sys.exit("that is more object code than the image holds (%d bytes) --"
+                 " lower --size" % IMAGE_LIMIT)
 
 
 if __name__ == "__main__":

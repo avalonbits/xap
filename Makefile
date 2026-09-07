@@ -40,6 +40,10 @@ TESTDIR  = test
 CODEADDR = A000
 
 # The benchmark corpus: every legal instruction, evenly distributed.
+#
+# Sized so that what it assembles to fits the object image, which the flat
+# test memory map caps at 23.5K ($4000 to $9E00). A ROM-resident xap would
+# put the image in banked RAM and not care; here the corpus has to.
 CORPUS_SIZE ?= 128K
 
 # How much of a line to assemble. 5 is the whole assembler; lower values stop
@@ -102,6 +106,14 @@ $(BUILDDIR)/isa_real.asm: tools/gen_corpus.py tools/gen_isa.py corpus/real.json 
 	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
 		-o $@ --size $(CORPUS_SIZE) --distribution corpus/real.json
 
+# A small self-contained even corpus for the hotspot profiler, which steps
+# under py65 and so needs something that fits in memory alongside xap. A
+# prefix of the big one would not do: cutting a corpus that has labels leaves
+# references to labels past the cut.
+$(BUILDDIR)/isa_small.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
+	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
+		-o $@ --size 12K
+
 $(BUILDDIR)/isa_jump_degenerate.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
 	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
 		-o $@ --degenerate $(DEGENERATE_LABELS)
@@ -121,8 +133,8 @@ test: all $(CORPORA)
 	$(PYENV) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
 # Per-routine cycle counts, stepped under py65. No emulator needed.
-hotspots: all $(CORPORA)
-	$(PYENV) $(PYTHON) $(TESTDIR)/hotspots.py $(BUILDDIR)/isa_real.asm
+hotspots: all $(BUILDDIR)/isa_small.asm
+	$(PYENV) $(PYTHON) $(TESTDIR)/hotspots.py $(BUILDDIR)/isa_small.asm
 
 # Phase by phase cycle costs on the emulator.
 bench: all $(CORPORA)
