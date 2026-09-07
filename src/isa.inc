@@ -35,7 +35,56 @@ XAP_FLAG_BITOP = $01
 
 XAP_MNEMONIC_COUNT = 70
 
-; Packed keys, sorted, for binary search.
+; Character to letter number, 0 if it is not a letter.
+xapLetter:
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$01,$02,$03,$04,$05,$06,$07,$08,$09,$0a,$0b,$0c,$0d,$0e,$0f
+        .byte   $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$1a,$00,$00,$00,$00,$00
+        .byte   $00,$01,$02,$03,$04,$05,$06,$07,$08,$09,$0a,$0b,$0c,$0d,$0e,$0f
+        .byte   $10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$1a,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+; The second letter's contribution to each half of the key.
+xapLetter2Hi:
+        .byte   $00,$00,$00,$00,$00,$00,$00,$00,$01,$01,$01,$01,$01,$01,$01,$01
+        .byte   $02,$02,$02,$02,$02,$02,$02,$02,$03,$03,$03
+xapLetter2Lo:
+        .byte   $00,$20,$40,$60,$80,$a0,$c0,$e0,$00,$20,$40,$60,$80,$a0,$c0,$e0
+        .byte   $00,$20,$40,$60,$80,$a0,$c0,$e0,$00,$20,$40
+
+; Hashed lookup: h = keyLo ^ (keyHi << 0), then probe forward.
+; 70 mnemonics in 256 slots, 1.26 probes for a hit.
+XAP_HASH_SHIFT = 0
+XAP_HASH_EMPTY = $FF
+xapHashTable:
+        .byte   $ff,$ff,$ff,$ff,$ff,$ff,$0b,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$33
+        .byte   $3f,$ff,$ff,$ff,$ff,$ff,$15,$16,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff
+        .byte   $ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$41,$ff,$ff,$ff,$ff,$ff
+        .byte   $40,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$08,$ff,$ff
+        .byte   $23,$0d,$26,$43,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$0c,$ff,$ff,$ff,$ff
+        .byte   $ff,$27,$42,$ff,$ff,$ff,$ff,$ff,$1f,$28,$03,$04,$29,$ff,$ff,$ff
+        .byte   $ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$3d,$3e,$02,$05,$ff,$ff,$ff,$ff
+        .byte   $ff,$ff,$44,$ff,$ff,$45,$ff,$ff,$ff,$ff,$ff,$06,$ff,$ff,$ff,$25
+        .byte   $ff,$ff,$ff,$ff,$12,$ff,$ff,$00,$ff,$11,$ff,$ff,$ff,$ff,$10,$ff
+        .byte   $ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$1e,$ff,$13,$ff,$ff,$ff,$ff
+        .byte   $09,$ff,$ff,$ff,$ff,$2f,$ff,$ff,$18,$19,$21,$22,$ff,$ff,$ff,$ff
+        .byte   $ff,$20,$ff,$17,$ff,$ff,$ff,$ff,$ff,$07,$ff,$30,$ff,$14,$ff,$ff
+        .byte   $2a,$01,$ff,$31,$ff,$ff,$ff,$ff,$ff,$0e,$24,$ff,$0a,$ff,$ff,$38
+        .byte   $ff,$2b,$ff,$ff,$3c,$ff,$3a,$3b,$2d,$0f,$2c,$32,$ff,$ff,$39,$ff
+        .byte   $ff,$ff,$ff,$ff,$ff,$36,$1b,$1a,$35,$ff,$ff,$2e,$ff,$ff,$ff,$34
+        .byte   $37,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$ff,$1d,$1c,$ff,$ff
+
+; Packed keys, for confirming a hit and rejecting a miss.
 xapKeyLo:
         .byte   $83,$c4,$6c,$52,$53,$63,$73,$b1,$34,$a9,$c5,$0c,$41,$4b,$c3,$d3
         .byte   $83,$84,$89,$96,$b0,$18,$19,$a3,$b8,$b9,$f2,$c3,$d8,$d9,$b0,$72
@@ -69,6 +118,29 @@ xapMnemonicFlags:
         .byte   $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01,$00
         .byte   $00,$00,$00,$00,$00,$00,$00,$01,$00,$00,$00,$00,$00,$00,$00,$00
         .byte   $00,$00,$00,$00,$00,$00
+
+; The address of each mnemonic's opcode row, so that selecting one is
+; two loads rather than shifting the slot number left four.
+xapRowLo:
+        .byte   <(xapOpcodes+$000),<(xapOpcodes+$010),<(xapOpcodes+$020),<(xapOpcodes+$030),<(xapOpcodes+$040),<(xapOpcodes+$050),<(xapOpcodes+$060),<(xapOpcodes+$070)
+        .byte   <(xapOpcodes+$080),<(xapOpcodes+$090),<(xapOpcodes+$0a0),<(xapOpcodes+$0b0),<(xapOpcodes+$0c0),<(xapOpcodes+$0d0),<(xapOpcodes+$0e0),<(xapOpcodes+$0f0)
+        .byte   <(xapOpcodes+$100),<(xapOpcodes+$110),<(xapOpcodes+$120),<(xapOpcodes+$130),<(xapOpcodes+$140),<(xapOpcodes+$150),<(xapOpcodes+$160),<(xapOpcodes+$170)
+        .byte   <(xapOpcodes+$180),<(xapOpcodes+$190),<(xapOpcodes+$1a0),<(xapOpcodes+$1b0),<(xapOpcodes+$1c0),<(xapOpcodes+$1d0),<(xapOpcodes+$1e0),<(xapOpcodes+$1f0)
+        .byte   <(xapOpcodes+$200),<(xapOpcodes+$210),<(xapOpcodes+$220),<(xapOpcodes+$230),<(xapOpcodes+$240),<(xapOpcodes+$250),<(xapOpcodes+$260),<(xapOpcodes+$270)
+        .byte   <(xapOpcodes+$280),<(xapOpcodes+$290),<(xapOpcodes+$2a0),<(xapOpcodes+$2b0),<(xapOpcodes+$2c0),<(xapOpcodes+$2d0),<(xapOpcodes+$2e0),<(xapOpcodes+$2f0)
+        .byte   <(xapOpcodes+$300),<(xapOpcodes+$310),<(xapOpcodes+$320),<(xapOpcodes+$330),<(xapOpcodes+$340),<(xapOpcodes+$350),<(xapOpcodes+$360),<(xapOpcodes+$370)
+        .byte   <(xapOpcodes+$380),<(xapOpcodes+$390),<(xapOpcodes+$3a0),<(xapOpcodes+$3b0),<(xapOpcodes+$3c0),<(xapOpcodes+$3d0),<(xapOpcodes+$3e0),<(xapOpcodes+$3f0)
+        .byte   <(xapOpcodes+$400),<(xapOpcodes+$410),<(xapOpcodes+$420),<(xapOpcodes+$430),<(xapOpcodes+$440),<(xapOpcodes+$450)
+xapRowHi:
+        .byte   >(xapOpcodes+$000),>(xapOpcodes+$010),>(xapOpcodes+$020),>(xapOpcodes+$030),>(xapOpcodes+$040),>(xapOpcodes+$050),>(xapOpcodes+$060),>(xapOpcodes+$070)
+        .byte   >(xapOpcodes+$080),>(xapOpcodes+$090),>(xapOpcodes+$0a0),>(xapOpcodes+$0b0),>(xapOpcodes+$0c0),>(xapOpcodes+$0d0),>(xapOpcodes+$0e0),>(xapOpcodes+$0f0)
+        .byte   >(xapOpcodes+$100),>(xapOpcodes+$110),>(xapOpcodes+$120),>(xapOpcodes+$130),>(xapOpcodes+$140),>(xapOpcodes+$150),>(xapOpcodes+$160),>(xapOpcodes+$170)
+        .byte   >(xapOpcodes+$180),>(xapOpcodes+$190),>(xapOpcodes+$1a0),>(xapOpcodes+$1b0),>(xapOpcodes+$1c0),>(xapOpcodes+$1d0),>(xapOpcodes+$1e0),>(xapOpcodes+$1f0)
+        .byte   >(xapOpcodes+$200),>(xapOpcodes+$210),>(xapOpcodes+$220),>(xapOpcodes+$230),>(xapOpcodes+$240),>(xapOpcodes+$250),>(xapOpcodes+$260),>(xapOpcodes+$270)
+        .byte   >(xapOpcodes+$280),>(xapOpcodes+$290),>(xapOpcodes+$2a0),>(xapOpcodes+$2b0),>(xapOpcodes+$2c0),>(xapOpcodes+$2d0),>(xapOpcodes+$2e0),>(xapOpcodes+$2f0)
+        .byte   >(xapOpcodes+$300),>(xapOpcodes+$310),>(xapOpcodes+$320),>(xapOpcodes+$330),>(xapOpcodes+$340),>(xapOpcodes+$350),>(xapOpcodes+$360),>(xapOpcodes+$370)
+        .byte   >(xapOpcodes+$380),>(xapOpcodes+$390),>(xapOpcodes+$3a0),>(xapOpcodes+$3b0),>(xapOpcodes+$3c0),>(xapOpcodes+$3d0),>(xapOpcodes+$3e0),>(xapOpcodes+$3f0)
+        .byte   >(xapOpcodes+$400),>(xapOpcodes+$410),>(xapOpcodes+$420),>(xapOpcodes+$430),>(xapOpcodes+$440),>(xapOpcodes+$450)
 
 ; Opcode by mode, 16 bytes per mnemonic, $00 where the mode is not
 ; legal -- the mask says which, since $00 is BRK. For a mnemonic with

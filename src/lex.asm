@@ -11,78 +11,68 @@
 ;   an error in A if the word is not an instruction.
 ;
 ;   Every mnemonic is three letters, so the key is those three packed five
-;   bits each into one word -- A is 1, Z is 26, and zero is not a letter.
-;   Comparing two keys is one 16-bit compare where comparing the spellings
-;   is a three byte loop with a case fold in it, and the key costs nothing
-;   to build because the fold has to happen while the letters are being
-;   read anyway. RMB3 and its siblings pack as RMB; the digit is read
-;   afterwards and folded into the opcode, not the key.
+;   bits each into one word -- A is 1, Z is 26, and zero is not a letter,
+;   so a short word cannot look like a long one padded out. RMB3 and its
+;   siblings pack as RMB; the digit is read afterwards and folded into the
+;   opcode, not the key.
+;
+;   The key is built by lookup rather than by shifting. It is
+;   c1<<10 | c2<<5 | c3, and of those the first letter lands wholly in the
+;   high byte as c1<<2 and the third wholly in the low byte; only the
+;   second straddles the two, and its halves are tabulated. Reading a
+;   letter is one indexed load that folds the case and rejects a
+;   non-letter at the same time. Between them these replace fifteen
+;   asl/rol pairs on a zero page word and three calls to fold the case --
+;   about 250 cycles a line, for the sake of a 256-byte table.
 ; -----------------------------------------------------------------------
 
 xapMnemonic:
-        stz     xapKey
-        stz     xapKey+1
         stz     xapDigit
 
-        ldx     #3
-_xmLetter:
         lda     (xapSrc),y
-        jsr     xapUpper
-        cmp     #'A'
-        bcc     _xmNotAWord
-        cmp     #'Z'+1
-        bcs     _xmNotAWord
-        sec
-        sbc     #'A'-1              ; A is 1, so a short word cannot look
-        pha                         ; like a long one padded with zeros
-
-        asl     xapKey              ; key = key << 5 | letter
-        rol     xapKey+1
-        asl     xapKey
-        rol     xapKey+1
-        asl     xapKey
-        rol     xapKey+1
-        asl     xapKey
-        rol     xapKey+1
-        asl     xapKey
-        rol     xapKey+1
-        pla
-        ora     xapKey
-        sta     xapKey
-
+        tax
+        lda     xapLetter,x
+        beq     _xmNotAWord
+        asl     a                   ; c1<<2 in the high byte is c1<<10
+        asl     a
+        sta     xapKey+1
         iny
-        dex
-        bne     _xmLetter
+
+        lda     (xapSrc),y
+        tax
+        lda     xapLetter,x
+        beq     _xmNotAWord
+        tax
+        lda     xapLetter2Hi,x      ; the halves of c2<<5
+        ora     xapKey+1
+        sta     xapKey+1
+        lda     xapLetter2Lo,x
+        sta     xapKey
+        iny
+
+        lda     (xapSrc),y
+        tax
+        lda     xapLetter,x
+        beq     _xmNotAWord
+        ora     xapKey              ; c2<<5 leaves the low five bits clear,
+        sta     xapKey              ; so the third letter just drops in
+        iny
 
         jsr     xapFind
         bcs     _xmNotAWord
 
-        ; The tables for this slot. The opcode row is sixteen bytes, so
-        ; its address is the slot shifted left four.
-        stx     xapSlot
+        ; Everything about this mnemonic, indexed by its slot. The address
+        ; of the opcode row is tabulated too, rather than shifting the slot
+        ; left four and adding the base every time.
         lda     xapModeMaskLo,x
         sta     xapMask
         lda     xapModeMaskHi,x
         sta     xapMask+1
         lda     xapMnemonicFlags,x
         sta     xapFlags
-
-        stx     xapRow
-        stz     xapRow+1
-        asl     xapRow
-        rol     xapRow+1
-        asl     xapRow
-        rol     xapRow+1
-        asl     xapRow
-        rol     xapRow+1
-        asl     xapRow
-        rol     xapRow+1
-        lda     xapRow
-        clc
-        adc     #<xapOpcodes
+        lda     xapRowLo,x
         sta     xapRow
-        lda     xapRow+1
-        adc     #>xapOpcodes
+        lda     xapRowHi,x
         sta     xapRow+1
 
         lda     xapFlags            ; RMBn and friends want their digit
@@ -117,62 +107,60 @@ _xmNotAWord:
         rts
 
 ; -----------------------------------------------------------------------
-;   Finds xapKey in the sorted key table. CC with the slot in X, or CS.
+;   Finds xapKey. CC with the slot in X, CS if there is no such mnemonic.
 ;
-;   The bound is exclusive, so neither end can run past the ends of the
-;   table: the window only ever shrinks towards a single slot, which is
-;   then the one candidate to compare.
+;   A hashed lookup with linear probing, which replaced a binary search
+;   that cost seven iterations and a subroutine call in each. Seventy
+;   entries in 256 slots is a load factor of 0.27 and about 1.3 probes for
+;   a hit, so this is a shade over one compare where the search was seven.
+;
+;   Not a perfect hash: seventy keys placed collision-free in 256 slots is
+;   a one in ten thousand shot, and finding one would cost more complexity
+;   than the quarter of a probe it saves.
+;
+;   The slot number is passed back through xapSlot because Y is the source
+;   cursor and has to be given back untouched.
 ; -----------------------------------------------------------------------
 
 xapFind:
-        stz     xapRow              ; lo, reused as scratch before the row
-        lda     #XAP_MNEMONIC_COUNT
-        sta     xapRow+1            ; hi, exclusive
+        phy
 
-_xfLoop:
-        lda     xapRow
-        cmp     xapRow+1
-        bcs     _xfSettled          ; lo >= hi, the window is empty
-
-        clc                         ; mid = (lo + hi) / 2
-        adc     xapRow+1
-        lsr     a
+        lda     xapKey+1
+        .if XAP_HASH_SHIFT >= 1
+        asl     a
+        .endif
+        .if XAP_HASH_SHIFT >= 2
+        asl     a
+        .endif
+        .if XAP_HASH_SHIFT >= 3
+        asl     a
+        .endif
+        eor     xapKey
         tax
 
-        jsr     xapCompare
-        bcc     _xfLower            ; key < table[mid]
-        beq     _xfLower            ; key == table[mid], keep it in range
-        inx                         ; key > table[mid], lo = mid + 1
-        stx     xapRow
-        bra     _xfLoop
-_xfLower:
-        stx     xapRow+1            ; hi = mid
-        bra     _xfLoop
+_xfProbe:
+        ldy     xapHashTable,x      ; slots are 0..69, so an empty one is
+        bmi     _xfMissing          ; the only value with bit 7 set
+        lda     xapKey
+        cmp     xapKeyLo,y
+        bne     _xfNext
+        lda     xapKey+1
+        cmp     xapKeyHi,y
+        beq     _xfFound
+_xfNext:
+        inx                         ; the table always keeps an empty slot,
+        bra     _xfProbe            ; so a miss cannot circle forever
 
-_xfSettled:
-        ldx     xapRow
-        cpx     #XAP_MNEMONIC_COUNT
-        bcs     _xfMissing
-        jsr     xapCompare
-        bne     _xfMissing
+_xfFound:
+        sty     xapSlot
+        ply
+        ldx     xapSlot
         clc
         rts
+
 _xfMissing:
+        ply
         sec
-        rts
-
-; -----------------------------------------------------------------------
-;   Compares xapKey against the key in slot X, as a subtraction: C set if
-;   the key is greater or equal, Z set if equal.
-; -----------------------------------------------------------------------
-
-xapCompare:
-        lda     xapKey+1
-        cmp     xapKeyHi,x
-        bne     _xcDone             ; the high bytes settle it
-        lda     xapKey
-        cmp     xapKeyLo,x
-_xcDone:
         rts
 
 ; -----------------------------------------------------------------------

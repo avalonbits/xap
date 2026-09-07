@@ -252,6 +252,44 @@ def crosscheck(table):
     return checked
 
 
+def find_hash(names):
+    """Picks how to hash a packed key into the 256-entry lookup table.
+
+    Not a perfect hash: seventy keys collision-free in 256 slots is a one in
+    ten thousand shot, and the search for one costs more complexity than it
+    saves cycles. Linear probing at a load factor of 0.27 finds a key in about
+    1.1 probes, which is close enough to one that the difference is lost in
+    the cost of the compare.
+
+    The family searched is (lo ^ (hi << s)) for a small s, because that is
+    three instructions on a 6502 and anything cleverer would cost more to
+    compute than the probes it saves.
+    """
+    best = None
+    for shift in range(4):
+        slots = [0xFF] * 256
+        probes = 0
+        for slot, name in enumerate(names):
+            key = pack(name)
+            h = ((key & 0xFF) ^ ((key >> 8) << shift)) & 0xFF
+            steps = 1
+            while slots[h] != 0xFF:
+                h = (h + 1) & 0xFF
+                steps += 1
+            slots[h] = slot
+            probes += steps
+        # Insertion order probing and successful-lookup probing are the same
+        # walk, so this average is what a lookup will actually cost.
+        average = probes / len(names)
+        if best is None or average < best[0]:
+            best = (average, shift, slots)
+
+    average, shift, slots = best
+    assert 0xFF in slots, "the table must keep an empty slot to end a miss on"
+
+    return average, shift, slots
+
+
 def emit(table, out):
     """Writes the table as 64tass source.
 
@@ -332,7 +370,41 @@ def emit(table, out):
 
     w("XAP_MNEMONIC_COUNT = %d\n\n" % len(names))
 
-    w("; Packed keys, sorted, for binary search.\n")
+    # Letters to 1..26 and everything else to zero, so reading a letter is one
+    # indexed load that both folds the case and rejects a non-letter -- where
+    # a compare, a fold and two range checks were about fifteen cycles more,
+    # three times a line.
+    w("; Character to letter number, 0 if it is not a letter.\n")
+    w("xapLetter:\n")
+    letters = [0] * 256
+    for i in range(26):
+        letters[ord('A') + i] = i + 1
+        letters[ord('a') + i] = i + 1
+    w(wrap(letters))
+    w("\n")
+
+    # The key is c1<<10 | c2<<5 | c3. The first letter lands wholly in the
+    # high byte as c1<<2 and the third wholly in the low byte, but the second
+    # straddles them, so its two halves are looked up rather than shifted out.
+    w("; The second letter's contribution to each half of the key.\n")
+    w("xapLetter2Hi:\n")
+    w(wrap([c >> 3 for c in range(27)]))
+    w("xapLetter2Lo:\n")
+    w(wrap([(c << 5) & 0xFF for c in range(27)]))
+    w("\n")
+
+    average, shift, slots = find_hash(names)
+    w("; Hashed lookup: h = keyLo ^ (keyHi << %d), then probe forward.\n"
+      % shift)
+    w("; %d mnemonics in 256 slots, %.2f probes for a hit.\n"
+      % (len(names), average))
+    w("XAP_HASH_SHIFT = %d\n" % shift)
+    w("XAP_HASH_EMPTY = $FF\n")
+    w("xapHashTable:\n")
+    w(wrap(slots))
+    w("\n")
+
+    w("; Packed keys, for confirming a hit and rejecting a miss.\n")
     w("xapKeyLo:\n")
     w(wrap([pack(n) & 0xFF for n in names]))
     w("xapKeyHi:\n")
@@ -349,6 +421,20 @@ def emit(table, out):
 
     w("xapMnemonicFlags:\n")
     w(wrap([1 if n[:3].lower() in BITOPS else 0 for n in names]))
+    w("\n")
+
+    w("; The address of each mnemonic's opcode row, so that selecting one is\n")
+    w("; two loads rather than shifting the slot number left four.\n")
+    w("xapRowLo:\n")
+    w("".join("        .byte   %s\n"
+              % ",".join("<(xapOpcodes+$%03x)" % (i * MODE_COUNT)
+                         for i in range(j, min(j + 8, len(names))))
+              for j in range(0, len(names), 8)))
+    w("xapRowHi:\n")
+    w("".join("        .byte   %s\n"
+              % ",".join(">(xapOpcodes+$%03x)" % (i * MODE_COUNT)
+                         for i in range(j, min(j + 8, len(names))))
+              for j in range(0, len(names), 8)))
     w("\n")
 
     w("; Opcode by mode, %d bytes per mnemonic, $00 where the mode is not\n"
