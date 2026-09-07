@@ -80,6 +80,8 @@ _xsrClear:
         stz     xapPending
         stz     xapPending+1
         stz     xapDeferred
+        stz     xapFixFree
+        stz     xapFixFree+1
         rts
 
 ; -----------------------------------------------------------------------
@@ -310,6 +312,28 @@ _xsdTwice:
 
 xapSymFixup:
         pha
+
+        ; A record retired by an earlier resolution, if there is one. Without
+        ; this the heap grows with every forward reference the file ever
+        ; makes rather than with how many are open at once, and a corpus of
+        ; a hundred thousand bytes runs it out.
+        lda     xapFixFree
+        ora     xapFixFree+1
+        beq     _xsxBump
+
+        lda     xapFixFree
+        sta     xapFix
+        lda     xapFixFree+1
+        sta     xapFix+1
+        ldy     #XAP_FIX_NEXT
+        lda     (xapFix),y
+        sta     xapFixFree
+        iny
+        lda     (xapFix),y
+        sta     xapFixFree+1
+        bra     _xsxHave
+
+_xsxBump:
         clc                         ; room for one more record
         lda     xapFixTop
         adc     #XAP_FIX_SIZE
@@ -333,6 +357,8 @@ _xsxRoom:
         sta     xapFixTop
         lda     xapTmp+1
         sta     xapFixTop+1
+
+_xsxHave:
 
         ldy     #XAP_FIX_PC
         lda     xapHole             ; where the operand sits, which the
@@ -413,7 +439,9 @@ xapSymResolve:
 _xsrWalk:
         lda     xapFix
         ora     xapFix+1
-        beq     _xsrDone
+        bne     _xsrOne
+        jmp     _xsrDone
+_xsrOne:
 
         ; Where in the image that address lives.
         ldy     #XAP_FIX_PC
@@ -487,15 +515,29 @@ _xsrStore:
         sta     (xapTmp)
 
 _xsrNext:
-        ldy     #XAP_FIX_NEXT
+        ldy     #XAP_FIX_NEXT       ; where the walk goes next
         lda     (xapFix),y
-        pha
+        sta     xapWrote
         iny
         lda     (xapFix),y
-        sta     xapFix+1
-        pla
+        sta     xapWrote+1
+
+        lda     xapFixFree          ; and this record is spare again
+        ldy     #XAP_FIX_NEXT
+        sta     (xapFix),y
+        lda     xapFixFree+1
+        iny
+        sta     (xapFix),y
+        lda     xapFix
+        sta     xapFixFree
+        lda     xapFix+1
+        sta     xapFixFree+1
+
+        lda     xapWrote
         sta     xapFix
-        bra     _xsrWalk
+        lda     xapWrote+1
+        sta     xapFix+1
+        jmp     _xsrWalk
 
 _xsrDone:
         clc

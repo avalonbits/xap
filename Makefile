@@ -42,9 +42,9 @@ CODEADDR = A000
 # The benchmark corpus: every legal instruction, evenly distributed.
 CORPUS_SIZE ?= 128K
 
-# How much of a line to assemble. 4 is the whole assembler; lower values stop
+# How much of a line to assemble. 5 is the whole assembler; lower values stop
 # after a phase so the benchmark can attribute cost by difference.
-PROFILE ?= 4
+PROFILE ?= 5
 
 TASSFLAGS = --mw65c02 -q -Wall -D XAP_PROFILE=$(PROFILE)
 
@@ -87,7 +87,12 @@ $(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR) need-tass
 # Two corpora. isa_even weights all 212 opcodes alike, so nothing can hide;
 # isa_real follows corpus/real.json, counted from real code by scan_isa.py, so
 # the number means something about how xap will feel.
-CORPORA = $(BUILDDIR)/isa_even.asm $(BUILDDIR)/isa_real.asm
+# How many labels the degenerate corpus uses. The heaps give out somewhere
+# between 520 and 560 in the current flat memory map.
+DEGENERATE_LABELS ?= 480
+
+CORPORA = $(BUILDDIR)/isa_even.asm $(BUILDDIR)/isa_real.asm \
+	  $(BUILDDIR)/isa_jump_degenerate.asm
 
 $(BUILDDIR)/isa_even.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
 	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
@@ -96,6 +101,10 @@ $(BUILDDIR)/isa_even.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
 $(BUILDDIR)/isa_real.asm: tools/gen_corpus.py tools/gen_isa.py corpus/real.json | $(BUILDDIR)
 	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
 		-o $@ --size $(CORPUS_SIZE) --distribution corpus/real.json
+
+$(BUILDDIR)/isa_jump_degenerate.asm: tools/gen_corpus.py tools/gen_isa.py | $(BUILDDIR)
+	TASS=$(TASS) PYTHONPATH=$(PYLIB) $(PYTHON) tools/gen_corpus.py \
+		-o $@ --degenerate $(DEGENERATE_LABELS)
 
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)

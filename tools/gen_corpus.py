@@ -7,9 +7,19 @@ all xap assembles so far.
 isa_real also carries blank lines and comments, in the proportions
 corpus/real.json measured from real source: a tenth of lines blank, an eighth
 nothing but a comment, and comment text making up nearly a third of all the
-characters in the file. xap has always handled comments -- they fall out of
-the line framing -- but a corpus without any is not measuring the file anyone
-actually assembles.
+characters in the file.
+
+Both carry labels, defined and referenced in both directions. Real source
+defines a label on 4.4% of its lines and gives 54% of its instructions a name
+rather than a number for an operand, so a corpus without any says nothing
+about the symbol table, the hash, or the fixups -- which is most of what an
+assembler does once it has labels at all.
+
+isa_jump_degenerate is the other end of that: every label is referenced before
+any of them is defined, and they are then defined in reverse, so the peak
+number of outstanding fixups is as large as the file can make it. It is a
+stress test rather than a throughput measure and is sized by what the heaps
+hold, not by a byte count.
 
 Two corpora, and they answer different questions.
 
@@ -42,6 +52,8 @@ program counter, so the generator tracks it.
 
 import argparse
 import json
+import random
+import re
 import os
 import sys
 
@@ -51,10 +63,46 @@ import gen_isa as g
 
 INDENT = "    "
 
+# The modes whose operand can be a code label. The rest need a value in zero
+# page or an immediate, and until assignments exist there is no way to give a
+# name to one of those.
+LABEL_CAPABLE = {"abs", "abx", "aby", "iabs", "iabx", "rel", "zprel"}
+
+# Measured over 80931 lines of x16-rom and SlithyMatt's tutorial: 4.4% of
+# lines define a label, and 54% of instructions take a name rather than a
+# number for an operand.
+#
+# The definition rate is reproduced exactly. The reference rate cannot be:
+# over half of real code's named operands are constants -- hardware
+# registers, sizes, character codes -- reached through immediate and zero
+# page modes, and until assignments exist there is no way to give a name to
+# one of those. Only about a third of instructions have a mode that can take
+# a code label at all, so nine in ten of those is as close as this gets. The
+# generator reports what it actually reached.
+LABEL_DEFINITION_RATE = 0.044
+LABEL_REFERENCE_RATE = 0.9
+
+# How far a reference reaches, in bytes of object code. Real code mostly
+# calls nearby and loops locally; this keeps the number of holes held open at
+# once in the same range that real source produces.
+LABEL_REACH = 1024
+
 # Comment text for isa_real. What matters is the length, since a comment is
 # scanned character by character and never parsed, but real-looking text keeps
 # the corpus readable when something goes wrong and it has to be eyeballed.
 # These average about 26 characters, which is what was measured.
+# How a reference is written, per mode. The operand is a name, so there is no
+# width to choose and nothing to format but the target.
+LABEL_TEMPLATE = {
+    "abs":   "{m} {target}",
+    "abx":   "{m} {target},x",
+    "aby":   "{m} {target},y",
+    "iabs":  "{m} ({target})",
+    "iabx":  "{m} ({target},x)",
+    "rel":   "{m} {target}",
+    "zprel": "{m} ${b:02x},{target}",
+}
+
 COMMENTS = [
     "; set up the pointer",
     "; fall through on purpose",
@@ -133,91 +181,147 @@ def spell(mnemonic, mode, dialect, **operands):
     return text
 
 
-def generate(order, shapes, size, dialect="xap", layout=None, origin=0x1000):
-    """Lines cycling through order until the text is as close to size as it
-    can get without going over or splitting a line.
+def build(order, shapes, count, layout, origin, rng):
+    """Lays out `count` lines and returns them as text, with what was used.
 
-    Blank and comment lines are spread by accumulator rather than at random:
-    add the wanted fraction each line and emit one whenever the total passes
-    one. That gives the exact proportion, evenly spaced, and the same file
-    every time.
-
-    Returns the text, the total line count, how many of those were
-    instructions, the end of the program counter, and which forms got used --
-    the caller checks that last one, because a schedule longer than the file
-    leaves the tail of it unvisited.
+    Two passes. The first fixes what each line is, and so how long it is, and
+    so where every label lands. The second chooses which label each reference
+    names, which cannot be done until the addresses are known -- a branch has
+    to be able to reach its target.
     """
-    out = []
-    used = set()
-    total = 0
-    pc = origin
-    i = 0
-    lines = 0
-
     blank_rate = layout["blank"] if layout else 0.0
     comment_rate = layout["comment_only"] if layout else 0.0
-    # The trailing-comment fraction is measured over every line, but only
-    # instruction lines can carry one, so it is scaled up by the share of
-    # lines that are instructions.
     trailing_rate = 0.0
     if layout:
-        instruction_share = 1.0 - layout["blank"] - layout["comment_only"]
-        trailing_rate = layout["trailing_comment"] / instruction_share
-    blank_acc = comment_acc = trailing_acc = 0.0
-    remark = 0
+        share = 1.0 - blank_rate - comment_rate
+        trailing_rate = layout["trailing_comment"] / share
 
-    while True:
+    items = []
+    blank_acc = comment_acc = trailing_acc = label_acc = 0.0
+    remark = 0
+    i = 0
+
+    while len(items) < count:
         blank_acc += blank_rate
         comment_acc += comment_rate
+        label_acc += LABEL_DEFINITION_RATE
+
         if blank_acc >= 1.0:
             blank_acc -= 1.0
-            line = "\n"
-            if total + len(line) > size:
-                break
-            out.append(line)
-            total += len(line)
-            lines += 1
+            items.append({"kind": "blank"})
             continue
         if comment_acc >= 1.0:
             comment_acc -= 1.0
-            line = INDENT + COMMENTS[remark % len(COMMENTS)] + "\n"
+            items.append({"kind": "comment",
+                          "text": COMMENTS[remark % len(COMMENTS)]})
             remark += 1
-            if total + len(line) > size:
-                break
-            out.append(line)
-            total += len(line)
-            lines += 1
+            continue
+        if label_acc >= 1.0:
+            label_acc -= 1.0
+            items.append({"kind": "label"})
             continue
 
         key = order[i % len(order)]
         mnemonic, mode, length = shapes[key]
-
-        # Values that vary without changing width. A zero page operand that
-        # grew to three digits would be assembled as absolute instead, and a
-        # different mode is a different measurement.
-        byte = (i * 7 + 0x11) & 0xFF
-        word = 0x1000 + ((i * 137) & 0x7FFF)
-
-        pc += length
-        line = INDENT + spell(mnemonic, mode, dialect,
-                              b=byte, w=word, target=pc)
-
         trailing_acc += trailing_rate
+        note = None
         if trailing_acc >= 1.0:
             trailing_acc -= 1.0
-            line += "  " + COMMENTS[remark % len(COMMENTS)]
+            note = COMMENTS[remark % len(COMMENTS)]
             remark += 1
-        line += "\n"
-
-        if total + len(line) > size:
-            break
-        out.append(line)
-        used.add(key)
-        total += len(line)
-        lines += 1
+        items.append({"kind": "insn", "key": key, "mnemonic": mnemonic,
+                      "mode": mode, "length": length, "note": note,
+                      "index": i})
         i += 1
 
-    return "".join(out), lines, i, pc, used
+    # Where everything lands, and so where every label is.
+    pc = origin
+    labels = []
+    for n, item in enumerate(items):
+        item["pc"] = pc
+        if item["kind"] == "label":
+            item["name"] = "L%d" % len(labels)
+            labels.append((item["name"], pc))
+        pc += item.get("length", 0)
+
+    # Which label each reference names. Half look back and half look forward,
+    # so that both the already-defined path and the fixup path are exercised;
+    # a branch is only given a target it can actually reach.
+    #
+    # References are kept local. Real code calls the routine next door and
+    # branches within a loop far more often than it reaches across the whole
+    # file, and a forward reference is held as a hole until its label turns
+    # up -- so picking targets uniformly would hold hundreds of them at once
+    # and say more about the fixup heap than about the assembler.
+    # isa_jump_degenerate is where that worst case belongs, deliberately.
+    reference_acc = 0.0
+    out = []
+    used = set()
+    for n, item in enumerate(items):
+        kind = item["kind"]
+        if kind == "blank":
+            out.append("")
+            continue
+        if kind == "comment":
+            out.append(INDENT + item["text"])
+            continue
+        if kind == "label":
+            out.append("%s:" % item["name"])
+            continue
+
+        used.add(item["key"])
+        mode = item["mode"]
+        target = None
+        if mode in LABEL_CAPABLE and labels:
+            reference_acc += LABEL_REFERENCE_RATE
+            if reference_acc >= 1.0:
+                reference_acc -= 1.0
+                here = item["pc"]
+                if mode in ("rel", "zprel"):
+                    reach = [nm for nm, at in labels
+                             if -128 <= at - (here + item["length"]) <= 127]
+                else:
+                    reach = [nm for nm, at in labels
+                             if abs(at - here) <= LABEL_REACH]
+                if reach:
+                    # Alternate which direction is preferred, so neither the
+                    # settled path nor the fixup path is the only one taken.
+                    back = [nm for nm in reach
+                            if dict(labels)[nm] <= here]
+                    fwd = [nm for nm in reach if dict(labels)[nm] > here]
+                    pool = (back or fwd) if (n & 1) else (fwd or back)
+                    target = rng.choice(pool)
+
+        b = (item["index"] * 7 + 0x11) & 0xFF
+        w = 0x1000 + ((item["index"] * 137) & 0x7FFF)
+        if target is not None:
+            body = LABEL_TEMPLATE[mode].format(m=item["mnemonic"], b=b,
+                                               target=target)
+        else:
+            body = spell(item["mnemonic"], mode, "xap", b=b, w=w,
+                         target=item["pc"] + item["length"])
+        line = INDENT + body
+        if item["note"]:
+            line += "  " + item["note"]
+        out.append(line)
+
+    instrs = sum(1 for it in items if it["kind"] == "insn")
+
+    return "\n".join(out) + "\n", used, len(labels), pc, instrs
+
+
+def degenerate(shapes, count, origin=0x1000):
+    """Every label referenced before any is defined, then defined backwards.
+
+    The worst case the fixup table can be asked for: nothing can be resolved
+    until the definitions start, so the number of holes held at once is the
+    number of labels. Defining them in reverse means the last reference made
+    is the first one retired.
+    """
+    lines = ["    jmp L%d" % i for i in range(count)]
+    lines += ["L%d:" % i for i in range(count - 1, -1, -1)]
+
+    return "\n".join(lines) + "\n", count
 
 
 def main():
@@ -226,7 +330,8 @@ def main():
     ap.add_argument("--size", default="128K")
     ap.add_argument("--distribution", default="",
                     help="weights from tools/scan_isa.py; even if omitted")
-    ap.add_argument("--dialect", choices=("xap", "64tass"), default="xap")
+    ap.add_argument("--degenerate", type=int, default=0, metavar="N",
+                    help="instead, N labels all used before any is defined")
     ap.add_argument("--tass", default=os.environ.get("TASS", "64tass"))
     args = ap.parse_args()
 
@@ -245,6 +350,16 @@ def main():
     shapes = forms(tass)
     if len(shapes) != 212:
         sys.exit("got %d instructions, the W65C02S has 212" % len(shapes))
+
+    if args.degenerate:
+        text, labels = degenerate(shapes, args.degenerate)
+        with open(args.output, "w") as fh:
+            fh.write(text)
+        print("%s: %d bytes, %d lines, %d labels all referenced before any "
+              "is defined" % (args.output, len(text), text.count("\n"), labels))
+        print("  and defined in reverse, so every hole is open at once")
+
+        return
 
     if args.distribution:
         with open(args.distribution) as fh:
@@ -266,23 +381,43 @@ def main():
         layout = None
         label = "all 212 forms, evenly"
 
-    # The schedule is one entry per weighted occurrence, and the file stops
-    # when it is full. If the schedule is longer than the file has lines, its
-    # tail is never reached and the rarest forms -- the floored ones -- are
-    # exactly what goes missing. So the weights are scaled to the number of
-    # lines that will fit, which a trial run measures.
-    order = schedule(weights)
-    text, lines, instrs, end, used = generate(
-        order, shapes, size, args.dialect, layout)
+    # The line count that fills the file is not known ahead of time, because
+    # a line's length depends on what it turned out to be. Closing in on it
+    # is cheaper than guessing, and the result is the same every run.
+    def attempt(order, count):
+        rng = random.Random(0x5A5A)
 
-    # Scaled against the instruction lines, not the total: blanks and comments
-    # take up room in the file but claim nothing from the schedule.
+        return build(order, shapes, count, layout, 0x1000, rng)
+
+    order = schedule(weights)
+    count = max(len(order), size // 20)
+    text = ""
+    for _ in range(12):
+        text, used, labels, end, instrs = attempt(order, count)
+        if len(text) > size:
+            count = int(count * size / len(text))
+        elif len(text) > size * 0.995:
+            break
+        else:
+            count = int(count * size / len(text)) + 1
+
+    while len(text) > size:                 # trim back to fit exactly
+        count -= 1
+        text, used, labels, end, instrs = attempt(order, count)
+
+    # The schedule is one entry per weighted occurrence, and only instruction
+    # lines draw from it -- blanks, comments and label definitions do not. So
+    # a schedule longer than the file has instructions leaves its tail
+    # unvisited, and the tail is the rarest forms. Scale to what fits and try
+    # again.
     if instrs < len(order):
         scale = instrs / len(order)
         weights = {k: max(int(round(w * scale)), 1) for k, w in weights.items()}
         order = schedule(weights)
-        text, lines, instrs, end, used = generate(
-            order, shapes, size, args.dialect, layout)
+        text, used, labels, end, instrs = attempt(order, count)
+        while len(text) > size:
+            count -= 1
+            text, used, labels, end, instrs = attempt(order, count)
 
     missing = set(shapes) - used
     if missing:
@@ -292,14 +427,17 @@ def main():
     with open(args.output, "w") as fh:
         fh.write(text)
 
-    print("%s: %d bytes, %d lines, %s%s"
-          % (args.output, len(text), lines, label,
-             "" if args.dialect == "xap" else " [%s dialect]" % args.dialect))
-    print("  all %d instructions present, object code $1000 to $%04X "
-          "(%d bytes)" % (len(used), end, end - 0x1000))
-    if layout:
-        print("  %d instruction lines, %d blank or comment"
-              % (instrs, lines - instrs))
+    lines = text.count("\n")
+    named = sum(1 for l in text.splitlines()
+                if l.startswith(INDENT) and not l.strip().startswith(";")
+                and re.search(r"\bL\d+\b", l))
+    print("%s: %d bytes, %d lines, %s"
+          % (args.output, len(text), lines, label))
+    print("  all %d instructions present, %d labels on %.1f%% of lines, "
+          "%.0f%% of instructions take a name"
+          % (len(used), labels, 100.0 * labels / lines,
+             100.0 * named / max(instrs, 1)))
+    print("  object code $1000 to $%04X" % end)
 
 
 if __name__ == "__main__":

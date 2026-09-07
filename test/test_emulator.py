@@ -159,11 +159,30 @@ class TestOnHardware(unittest.TestCase):
         object flushes -- which is where a streaming bug would show and an
         encoding test never would.
         """
+        # The whole file, not a prefix of it. Cutting a corpus that has
+        # labels leaves references to labels past the cut, and those are
+        # holes that never close -- which is a test of the fixup heap's
+        # size and nothing else.
         path = os.path.join(ROOT, "build", "isa_even.asm")
         if not os.path.exists(path):
             self.skipTest("build/isa_even.asm is missing -- run make")
         with open(path) as fh:
-            source = "".join(fh.readlines()[:4000])
+            source = fh.read()
+
+        got, _ = self.assemble(source)
+        self.assertEqual(got, self.tass(source))
+
+    def test_the_degenerate_corpus(self):
+        """Every label used before any is defined, then defined backwards.
+
+        The most holes the fixup table can be asked to hold at once, and the
+        longest walk back through them.
+        """
+        path = os.path.join(ROOT, "build", "isa_jump_degenerate.asm")
+        if not os.path.exists(path):
+            self.skipTest("build/isa_jump_degenerate.asm is missing")
+        with open(path) as fh:
+            source = fh.read()
 
         got, _ = self.assemble(source)
         self.assertEqual(got, self.tass(source))
