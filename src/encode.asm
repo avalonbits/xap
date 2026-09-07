@@ -205,6 +205,11 @@ _xofRange:
 
 ; -----------------------------------------------------------------------
 ;   Writes one byte of object code. Preserves X and Y.
+;
+;   The buffer can only become full on a page boundary, because it ends
+;   on one, so the check costs a taken branch on 255 bytes out of 256 and
+;   a compare on the other. Assembling to memory points the vector at an
+;   RTS and sets a limit the output never reaches.
 ; -----------------------------------------------------------------------
 
 xapPut:
@@ -212,5 +217,10 @@ xapPut:
         inc     xapOut
         bne     _xpDone
         inc     xapOut+1
+        lda     xapOut+1
+        cmp     xapOutTop+1
+        beq     _xpFlush
 _xpDone:
         rts
+_xpFlush:
+        jmp     (xapFlushVec)

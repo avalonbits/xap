@@ -27,7 +27,7 @@ TASSFLAGS = --mw65c02 -q -Wall
 # own prerequisite; the binary is the thing worth naming anyway.
 .PHONY: all isa test clean
 
-all: $(BUILDDIR)/xap.bin
+all: $(BUILDDIR)/xap.bin $(BUILDDIR)/bench.bin
 
 # Every source, not just the one 64tass is pointed at. Listing only xap.asm
 # meant an edit to encode.asm assembled nothing and tested the previous
@@ -39,6 +39,13 @@ $(BUILDDIR)/xap.bin: $(SOURCES) | $(BUILDDIR)
 		-o $@ -L $(BUILDDIR)/xap.lst -l $(BUILDDIR)/xap.labels \
 		$(SRCDIR)/xap.asm
 
+# The emulator driver: xap plus a timing stub, built as one binary so the
+# harness can read every address it needs out of the label file.
+$(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR)
+	$(TASS) $(TASSFLAGS) -b -D CODEADDR=\$$$(CODEADDR) \
+		-o $@ -L $(BUILDDIR)/bench.lst -l $(BUILDDIR)/bench.labels \
+		$(TESTDIR)/bench.asm
+
 $(BUILDDIR):
 	mkdir -p $(BUILDDIR)
 
@@ -48,8 +55,15 @@ $(BUILDDIR):
 isa:
 	TASS=$(TASS) $(PYTHON) tools/gen_isa.py -o $(SRCDIR)/isa.inc
 
+# The emulator tests need x16emu and a ROM; they skip themselves without
+# them. Build the emulator from X16Community/x16-emulator and point these at
+# it -- there is no packaged build to depend on.
+X16EMU ?=
+X16ROM ?=
+
 test: all
-	TASS=$(TASS) $(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
+	TASS=$(TASS) X16EMU=$(X16EMU) X16ROM=$(X16ROM) \
+		$(PYTHON) -m unittest discover -s $(TESTDIR) -p 'test_*.py' -v
 
 clean:
 	rm -rf $(BUILDDIR)

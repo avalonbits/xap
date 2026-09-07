@@ -1,0 +1,183 @@
+"""End to end on the emulator: xap reads a file and writes a file.
+
+The host tests drive xap's inner loop against a block of memory, which is fast
+and covers encoding but never touches the KERNAL. These run the same code on a
+real X16 with real files, which is the only way to test the streaming reader,
+the block reads and the object writer -- and the only place a cycle count means
+anything.
+
+Skipped unless $X16EMU points at a build of x16emu. There is no packaged one to
+depend on; see the README.
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
+
+import gen_isa as g
+from emu import Emulator, labels, petscii
+
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+BENCH = os.path.join(ROOT, "build", "bench.bin")
+BENCH_LABELS = os.path.join(ROOT, "build", "bench.labels")
+
+TASS = os.environ.get("TASS", "64tass")
+X16EMU = os.environ.get("X16EMU", "")
+
+ORIGIN = 0x1000
+
+
+def a_program(instructions):
+    """A source file of the given instructions, repeated to length."""
+    return "".join(line + "\n" for line in instructions)
+
+
+class TestOnHardware(unittest.TestCase):
+    sym = None
+    code = None
+
+    @classmethod
+    def setUpClass(cls):
+        if not X16EMU or not os.path.exists(X16EMU):
+            raise unittest.SkipTest("$X16EMU is not a built x16emu")
+        if not os.path.exists(BENCH):
+            raise unittest.SkipTest("build/bench.bin is missing -- run make")
+        cls.sym = labels(BENCH_LABELS)
+        with open(BENCH, "rb") as fh:
+            cls.code = fh.read()
+
+    def assemble(self, source, origin=ORIGIN):
+        """Assembles source on the emulator. Returns (bytes, cycles)."""
+        fsroot = tempfile.mkdtemp(prefix="xap_emu_")
+        try:
+            with open(os.path.join(fsroot, "SRC.ASM"), "w") as fh:
+                fh.write(source)
+
+            src = petscii("SRC.ASM")
+            # CBM DOS needs the type and mode to create a file for writing.
+            obj = petscii("OUT.BIN,P,W")
+            sym = self.sym
+
+            with Emulator(fsroot) as e:
+                e.load(sym["xapBenchLoad"], self.code)
+                e.load(sym["xapBenchSrcName"], src)
+                e.poke(sym["xapBenchSrcLen"], len(src))
+                e.load(sym["xapBenchObjName"], obj)
+                e.poke(sym["xapBenchObjLen"], len(obj))
+                e.poke16(sym["xapBenchOrigin"], origin)
+
+                e.run(sym["xapBenchEntry"])
+
+                result = e.peek(sym["xapBenchResult"])
+                cycles = e.peek32(sym["xapBenchCycles"])
+
+            self.assertEqual(result, 0,
+                             "xap reported error $%02X" % result)
+
+            out = os.path.join(fsroot, "OUT.BIN")
+            self.assertTrue(os.path.exists(out),
+                            "no object file was written")
+            with open(out, "rb") as fh:
+                return fh.read(), cycles
+        finally:
+            shutil.rmtree(fsroot, ignore_errors=True)
+
+    @staticmethod
+    def for_tass(source):
+        """The same source in 64tass's spelling.
+
+        64tass takes the bit number of the Rockwell instructions as a first
+        operand where xap, cc65 and the WDC datasheet attach it to the
+        mnemonic.
+        """
+        return re.sub(r"\b(rmb|smb|bbr|bbs)([0-7])\s+",
+                      r"\1 \2,", source, flags=re.I)
+
+    def tass(self, source, origin=ORIGIN):
+        """The same source through 64tass, as raw bytes."""
+        source = self.for_tass(source)
+        d = tempfile.mkdtemp(prefix="xap_tass_")
+        try:
+            src = os.path.join(d, "s.asm")
+            out = os.path.join(d, "s.bin")
+            with open(src, "w") as fh:
+                fh.write("* = $%04X\n" % origin + source)
+            r = subprocess.run([TASS, "--mw65c02", "-q", "-b", "-o", out, src],
+                               capture_output=True)
+            self.assertEqual(r.returncode, 0, r.stderr.decode())
+            with open(out, "rb") as fh:
+                return fh.read()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    # ---- correctness ---------------------------------------------------
+
+    def test_assembles_a_file_to_a_file(self):
+        source = a_program(["nop", "lda #$12", "lda $34", "lda $5678",
+                            "jmp ($1234)", "bcc $1010", "rmb3 $34",
+                            "bbr0 $34,$1020", "inc a", "stp"])
+        got, _ = self.assemble(source)
+        self.assertEqual(got, self.tass(source))
+
+    def test_a_file_larger_than_the_buffer(self):
+        """The reader refills, and a line never straddles a refill.
+
+        The buffer is 2K, so this is many refills and the carried tail lands
+        at a different offset each time.
+        """
+        source = a_program(["lda #$%02X" % (i & 0xFF) for i in range(3000)])
+        self.assertGreater(len(source), 8 * 2048)
+        got, _ = self.assemble(source)
+        self.assertEqual(got, self.tass(source))
+
+    def test_output_larger_than_the_object_buffer(self):
+        """More than 1K of object code, so the writer flushes mid-assembly."""
+        source = a_program(["lda $5678"] * 2000)      # 6000 bytes out
+        got, _ = self.assemble(source)
+        self.assertEqual(len(got), 6000)
+        self.assertEqual(got, self.tass(source))
+
+    def test_lines_of_awkward_lengths(self):
+        """Padding shifts every line boundary against the refill boundary."""
+        for pad in (0, 1, 7, 63):
+            source = a_program([" " * pad + "lda #$aa" for _ in range(700)])
+            got, _ = self.assemble(source)
+            self.assertEqual(got, self.tass(source), "pad=%d" % pad)
+
+    def test_the_last_line_need_not_be_terminated(self):
+        got, _ = self.assemble("nop\nlda #$12")
+        self.assertEqual(got, bytes([0xEA, 0xA9, 0x12]))
+
+    # ---- speed ---------------------------------------------------------
+
+    def test_reports_a_cycle_count(self):
+        """The measurement is real, and scales with the work."""
+        small = a_program(["lda #$12"] * 200)
+        large = a_program(["lda #$12"] * 2000)
+
+        _, small_cycles = self.assemble(small)
+        _, large_cycles = self.assemble(large)
+
+        self.assertGreater(small_cycles, 0)
+        # Ten times the input inside a factor of two of ten times the cycles,
+        # which is the claim that the assembler is linear in its input.
+        ratio = large_cycles / small_cycles
+        self.assertGreater(ratio, 5, "cycles did not scale with the input")
+        self.assertLess(ratio, 20, "cycles grew faster than the input")
+
+        per_byte = large_cycles / len(large)
+        print("\n    %d lines, %d bytes: %d cycles, %.1f cycles/byte, "
+              "%.3fs at 8MHz"
+              % (2000, len(large), large_cycles, per_byte,
+                 large_cycles / 8e6))
+
+
+if __name__ == "__main__":
+    unittest.main()

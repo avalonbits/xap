@@ -14,39 +14,75 @@
 ;   nothing is buffered for a later pass to revisit. When labels arrive
 ;   they add a patch list, not a second read of the source.
 ;
+;   The source is a window into a buffer rather than the whole text, and
+;   the window is refilled through a vector. That is what lets the same
+;   assembler read a file of any size through the KERNAL and also run
+;   against a block of memory, which is how the host tests drive it
+;   without an emulator.
+;
 ; ***********************************************************************
 
         * = CODEADDR
 
 ; -----------------------------------------------------------------------
-;   Entry vector. First word of the binary, so a caller needs one address
-;   and not a symbol table.
+;   Entry vectors, at the front so a caller needs addresses and not a
+;   symbol table.
 ; -----------------------------------------------------------------------
 
-        jmp     xapAssemble
+        jmp     xapAssemble         ; +0  assemble the text at xapSrc
+        jmp     xapAssembleFile     ; +3  assemble xapName to xapObjName
+
+; -----------------------------------------------------------------------
+;   Buffers.
+;
+;   Both are page aligned and end on a page boundary, so the tests for
+;   "full" are single byte compares. The source buffer has one byte past
+;   its end for the terminator that marks the end of the window.
+; -----------------------------------------------------------------------
+
+XAP_BUFFER      = $2000             ; source window, 2K
+XAP_BUFFER_END  = $2800
+XAP_OBJBUF      = $2900             ; object output, 1K
+XAP_OBJBUF_END  = $2D00
 
 ; -----------------------------------------------------------------------
 ;   Zero page.
 ;
 ;   $22 is the first byte the X16 leaves to the user; the KERNAL's r0-r15
-;   sit below it and BASIC's area above. Twenty bytes, which leaves the
-;   rest of the user range for the caller.
+;   sit below it and BASIC's area above.
 ; -----------------------------------------------------------------------
 
 XAP_ZP    = $22
 
-xapSrc    = XAP_ZP+0        ; source text, NUL terminated
-xapOut    = XAP_ZP+2        ; where the next code byte goes
-xapPC     = XAP_ZP+4        ; program counter of the instruction being built
-xapValue  = XAP_ZP+6        ; the operand's value
-xapTarget = XAP_ZP+8        ; second operand: the branch target of BBRx/BBSx
-xapKey    = XAP_ZP+10       ; packed mnemonic, and scratch for the search
-xapRow    = XAP_ZP+12       ; the mnemonic's opcode row
-xapMask   = XAP_ZP+14       ; the modes it accepts
-xapMode   = XAP_ZP+16       ; the mode its operand turned out to be
-xapSlot   = XAP_ZP+17       ; its index in the tables
-xapDigit  = XAP_ZP+18       ; the n of RMBn, or 0
-xapFlags  = XAP_ZP+19       ; XAP_FLAG_BITOP
+xapSrc        = XAP_ZP+0            ; where the next source byte is
+xapOut        = XAP_ZP+2            ; where the next code byte goes
+xapPC         = XAP_ZP+4            ; program counter of the instruction
+xapValue      = XAP_ZP+6            ; the operand's value
+xapTarget     = XAP_ZP+8            ; the branch target of BBRx/BBSx
+xapKey        = XAP_ZP+10           ; packed mnemonic, then scratch
+xapRow        = XAP_ZP+12           ; the mnemonic's opcode row
+xapMask       = XAP_ZP+14           ; the modes it accepts
+xapMode       = XAP_ZP+16           ; the mode its operand turned out to be
+xapSlot       = XAP_ZP+17           ; its index in the tables
+xapDigit      = XAP_ZP+18           ; the n of RMBn, or 0
+xapFlags      = XAP_ZP+19           ; XAP_FLAG_BITOP
+
+xapBufTop     = XAP_ZP+20           ; end of the source window
+xapFill       = XAP_ZP+22           ; where a refill or flush is working
+xapTmp        = XAP_ZP+24           ; byte counts during refill and flush
+xapWrote      = XAP_ZP+26           ; how much the last block call moved
+xapOutTop     = XAP_ZP+28           ; when the object buffer is full
+xapEOF        = XAP_ZP+30           ; the source file has run out
+xapObjError   = XAP_ZP+31           ; a write failed, reported at the end
+xapName       = XAP_ZP+32           ; source file name
+xapNameLen    = XAP_ZP+34
+xapObjName    = XAP_ZP+35           ; object file name
+xapObjNameLen = XAP_ZP+37
+xapRefillVec  = XAP_ZP+38           ; how to get more source
+xapFlushVec   = XAP_ZP+40           ; what to do with a full object buffer
+xapRunError   = XAP_ZP+42           ; held while the files are closed
+xapRawTop     = XAP_ZP+43           ; end of what was read, past the window
+xapNulSave    = XAP_ZP+45           ; the byte the window terminator covers
 
 ; -----------------------------------------------------------------------
 ;   Error codes.
@@ -59,9 +95,11 @@ xapFlags  = XAP_ZP+19       ; XAP_FLAG_BITOP
 
 XAP_OK        = $00
 XAP_ESYNTAX   = $01         ; general syntax error
+XAP_ENOFILE   = $05         ; source file not found
 XAP_ERANGE    = $07         ; relative branch out of range
 XAP_EMODE     = $08         ; address mode not supported
 XAP_EEXPR     = $09         ; bad expression
+XAP_ELINE     = $0A         ; line too long
 XAP_EMNEMONIC = $20         ; not an instruction
 XAP_EBIT      = $21         ; bit number missing, or not 0-7
 XAP_EVALUE    = $22         ; value does not fit the only mode available
@@ -69,29 +107,128 @@ XAP_EVALUE    = $22         ; value does not fit the only mode available
 ; -----------------------------------------------------------------------
 ;   Assembles the text at xapSrc to xapOut, starting at xapPC.
 ;
-;   Returns the error code in A, CC on success and CS on failure. On
-;   failure xapSrc points into the line that failed.
+;   The window is whatever is already in memory and there is no more
+;   behind it, which is what the host tests want: no KERNAL, no files,
+;   and a result they can read straight out of memory.
 ; -----------------------------------------------------------------------
 
 xapAssemble:
-        jsr     xapLine
-        bcs     _xaDone             ; stop at the first error
-        ldy     #0
-        lda     (xapSrc),y          ; end of the text?
-        bne     xapAssemble
+        lda     #<xapNoRefill
+        sta     xapRefillVec
+        lda     #>xapNoRefill
+        sta     xapRefillVec+1
+        lda     #<xapNoFlush
+        sta     xapFlushVec
+        lda     #>xapNoFlush
+        sta     xapFlushVec+1
 
+        stz     xapOutTop           ; a limit the output cannot reach
+        stz     xapOutTop+1
+        stz     xapObjError
+        bra     xapRun
+
+xapNoRefill:
+        sec                         ; there was never any more
+        rts
+xapNoFlush:
+        rts
+
+; -----------------------------------------------------------------------
+;   Assembles the file named at xapName into the file named at
+;   xapObjName, starting at xapPC. CC on success, CS with an error in A.
+; -----------------------------------------------------------------------
+
+xapAssembleFile:
+        jsr     xapOpenSource
+        bcs     _xafExit
+
+        jsr     xapOpenObject
+        bcs     _xafNoObject
+
+        lda     #<xapFileRefill
+        sta     xapRefillVec
+        lda     #>xapFileRefill
+        sta     xapRefillVec+1
+        lda     #<xapObjFlush
+        sta     xapFlushVec
+        lda     #>xapObjFlush
+        sta     xapFlushVec+1
+
+        lda     #<XAP_OBJBUF_END
+        sta     xapOutTop
+        lda     #>XAP_OBJBUF_END
+        sta     xapOutTop+1
+
+        ; Both files are closed whatever happens, so the outcome is put
+        ; somewhere it will survive the closing rather than juggled on
+        ; the stack around two more calls that can fail themselves.
+        stz     xapRunError
+        jsr     xapRun
+        bcc     _xafRan
+        sta     xapRunError
+_xafRan:
+        jsr     xapCloseObject
+        bcc     _xafClosed
+        ldx     xapRunError         ; a failed write only surfaces if the
+        bne     _xafClosed          ; assembly itself was clean
+        sta     xapRunError
+_xafClosed:
+        jsr     xapCloseSource
+
+        lda     xapRunError
+        bne     _xafFailed
+        clc
+        rts
+_xafFailed:
+        sec
+        rts
+
+_xafNoObject:
+        pha
+        jsr     xapCloseSource
+        pla
+        sec
+_xafExit:
+        rts
+
+; -----------------------------------------------------------------------
+;   The assembly loop itself, once the vectors are set.
+; -----------------------------------------------------------------------
+
+xapRun:
+        jsr     xapLine
+        bcs     _xrDone             ; stop at the first error
+
+        ldy     #0
+        lda     (xapSrc),y          ; more in the window?
+        bne     xapRun
+
+        jsr     xapRefill           ; ask for another windowful
+        bcc     xapRun
+        cmp     #0                  ; CS with a code is a real error
+        bne     _xrDone
+
+        lda     xapObjError         ; a write may have failed silently
+        bne     _xrObjError
         lda     #XAP_OK
         clc
-_xaDone:
+_xrDone:
         rts
+_xrObjError:
+        sec
+        rts
+
+xapRefill:
+        lda     #0                  ; the plain end of input, not an error
+        jmp     (xapRefillVec)
 
 ; -----------------------------------------------------------------------
 ;   Assembles one line, leaving xapSrc on the first character of the next.
 ;
-;   Y is the cursor for the whole line and is folded back into xapSrc
-;   only at the end, so scanning is an indexed read rather than a pointer
-;   increment. Lines are capped well below 255 characters, so it cannot
-;   run off the end of the index.
+;   Y is the cursor for the whole line and is folded back into xapSrc only
+;   at the end, so scanning is an indexed read rather than a pointer
+;   increment. A refill only ever happens between lines, so the window
+;   cannot move under the cursor.
 ; -----------------------------------------------------------------------
 
 xapLine:
@@ -115,11 +252,6 @@ xapLine:
         lda     #XAP_ESYNTAX
         ; fall through
 
-; -----------------------------------------------------------------------
-;   Fails with the code in A, leaving xapSrc at the start of the line so
-;   the caller can report where.
-; -----------------------------------------------------------------------
-
 xapFail:
         sec
         rts
@@ -131,7 +263,7 @@ xapFail:
 
 xapEndLine:
         lda     (xapSrc),y
-        beq     _xelFold            ; end of text: stop on the NUL
+        beq     _xelFold            ; end of the window: stop on the NUL
         cmp     #13
         beq     _xelEol
         cmp     #10
@@ -140,8 +272,8 @@ xapEndLine:
         bra     xapEndLine
 
 _xelEol:
-        iny                         ; step over the terminator, and over
-        cmp     #13                 ; the LF of a CR LF pair
+        iny                         ; over the terminator, and over the
+        cmp     #13                 ; LF of a CR LF pair
         bne     _xelFold
         lda     (xapSrc),y
         cmp     #10
@@ -160,8 +292,8 @@ _xelExit:
         rts
 
 ; -----------------------------------------------------------------------
-;   Z set when the cursor is at something that ends the line: the NUL, a
-;   newline, or a comment. Does not move the cursor.
+;   Z set when the cursor is at something that ends the line: the end of
+;   the window, a newline, or a comment. Does not move the cursor.
 ; -----------------------------------------------------------------------
 
 xapAtEnd:
@@ -197,4 +329,5 @@ _xssDone:
         .include "lex.asm"
         .include "mode.asm"
         .include "encode.asm"
+        .include "file.asm"
         .include "isa.inc"

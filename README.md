@@ -35,12 +35,59 @@ pip install py65             # runs xap's own code on the host
 ```
 
 ```
-make          # build/xap.bin
+make          # build/xap.bin and build/bench.bin
 make test     # build, then the whole suite
 make isa      # regenerate src/isa.inc (only when the generator changes)
 ```
 
 Both can be pointed elsewhere: `make test TASS=/path/to/64tass PYTHON=...`.
+
+## Running it on the emulator
+
+The host tests drive xap's inner loop against a block of memory. They are
+fast and they cover encoding, but they never touch the KERNAL, so they say
+nothing about the file reader and nothing about speed. For that there is a
+second suite that runs the same code on the real machine.
+
+Build [x16emu](https://github.com/X16Community/x16-emulator) and point the
+tests at it — there is no packaged build to depend on, so the emulator tests
+skip themselves when it is missing:
+
+```
+make test X16EMU=/path/to/x16emu X16ROM=/path/to/rom.bin
+```
+
+It works like this. The emulator's `-testbench` mode boots the machine
+normally and then drops into a command loop on stdin that can set memory, run
+code and read the result back; closing stdin exits it. `-fsroot` puts a host
+directory on the emulated drive, so the harness writes the source there and
+xap reads it through the KERNAL like any other file. `test/bench.asm` builds
+xap together with a stub that hands it the two names and times it, as one
+binary, so the harness reads every address it needs out of 64tass's label
+file rather than being told twice.
+
+Timing is the emulator's cycle counter at `$9FB8`: writing to it sets a base
+and reading it latches the count since. It counts emulated cycles, so the
+number is what the instruction stream would cost a real 8MHz X16 — it does
+not move under `-warp` and does not care how busy the host is.
+
+## Large files
+
+The source is streamed, never loaded. A refill reads blocks into a 2K buffer
+and then trims the buffer back to the last newline in it, carrying the partial
+line after it to the front next time. So the window the assembler sees always
+ends where a line does, a token can never straddle a refill, and the parser
+can go on indexing off one pointer with Y.
+
+Nothing is read twice and nothing is kept once it has been passed, so the
+source can be any size at all — what stays in memory is the buffer, and the
+buffer is a fixed size. Object code goes out the same way, through a 1K buffer
+flushed when it fills.
+
+Blocks come in through `MACPTR`, which fills memory directly at about half a
+cycle a byte where `CHRIN` costs a hundred. Both `MACPTR` and `MCIOUT` are
+allowed to refuse — the KERNAL documents devices without them — so there is a
+byte-at-a-time path behind each.
 
 ## How it is put together
 
