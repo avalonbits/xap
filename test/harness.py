@@ -59,9 +59,22 @@ class BankedMemory:
     instructions and every one of them reads memory.
     """
 
+    # A real machine does not hand anyone zeroed RAM, and py65 does. That
+    # difference hid a bug for a whole session: the local bucket table was
+    # never cleared at reset, which is harmless when the buckets happen to
+    # be zero and an endless walk through a chain of nonsense when they are
+    # not. Every host test passed; the emulator hung on one run in six.
+    #
+    # So the memory starts as something that is not zero and is not a
+    # plausible anything -- a pointer built out of it addresses itself, so
+    # a chain walk over uninitialised heads runs forever rather than
+    # stopping by luck on the first read.
+    POISON = 0xA5
+
     def __init__(self, banks=IMAGE_BANK + IMAGE_BANKS + 1):
-        self.flat = bytearray(0x10000)
-        self.banks = [bytearray(WINDOW_SIZE) for _ in range(banks)]
+        self.flat = bytearray([self.POISON]) * 0x10000
+        self.banks = [bytearray([self.POISON]) * WINDOW_SIZE
+                      for _ in range(banks)]
 
     def __getitem__(self, a):
         if isinstance(a, slice):

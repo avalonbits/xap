@@ -90,7 +90,7 @@ _xsrClear:
         sta     xapLocalTop
         lda     #>XAP_LOCALHEAP
         sta     xapLocalTop+1
-        jmp     xapLocalClear
+        jmp     xapLocalReset
 
 ; -----------------------------------------------------------------------
 ;   Hashes the name in XAP_LABEL, length xapLabelLen, into A.
@@ -1166,6 +1166,31 @@ _xraExit:
 
 ; -----------------------------------------------------------------------
 ;   Empties the local bucket table.
+; -----------------------------------------------------------------------
+
+; -----------------------------------------------------------------------
+;   Empties the whole bucket table, for a run that is only starting.
+;
+;   xapLocalClear below walks the list of buckets this scope wrote to,
+;   which says nothing at all about the ones it did not -- and at the
+;   start of a run that is every one of them. So the first clear cannot
+;   go through the list; there is nothing in it, and what is in the table
+;   is whatever the machine powered on with.
+; -----------------------------------------------------------------------
+
+xapLocalReset:
+        lda     #0
+        ldx     #XAP_LOCALMASK
+_xlrLoop:
+        sta     XAP_LOCALHASH_LO,x
+        sta     XAP_LOCALHASH_HI,x
+        dex
+        bpl     _xlrLoop
+        stz     xapLocalCount
+        rts
+
+; -----------------------------------------------------------------------
+;   Empties it at a scope boundary, which is the hot one.
 ; -----------------------------------------------------------------------
 
 xapLocalClear:
