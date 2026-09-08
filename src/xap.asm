@@ -211,7 +211,9 @@ atend .macro
 ;   Most calls have nothing to skip -- there is one run of indentation a
 ;   line and the rest of the calls sit between tokens that are usually
 ;   already touching. So the first character is tested inline and the
-;   loop is only entered when there is really a space there.
+;   loop is only entered when there is really a space there, which also
+;   means the loop can start by stepping over that character rather than
+;   reading it a second time.
 ; -----------------------------------------------------------------------
 
 skipspace .macro
@@ -504,18 +506,21 @@ _xelExit:
 
 ; -----------------------------------------------------------------------
 ;   Steps the cursor over spaces and tabs.
+;
+;   Entered only from the .skipspace macro, which has already looked at
+;   the character under the cursor and found it to be one of the two. So
+;   the first thing to do is step past it, and the loop never re-reads a
+;   character the caller has already classified -- which takes three
+;   cycles off every space in a run of indentation.
 ; -----------------------------------------------------------------------
 
 xapSkipSpace:
+        iny
         lda     (xapSrc),y
         cmp     #' '
-        beq     _xssNext
+        beq     xapSkipSpace
         cmp     #9
-        bne     _xssDone
-_xssNext:
-        iny
-        bra     xapSkipSpace
-_xssDone:
+        beq     xapSkipSpace
         rts
 
         .include "symbol.asm"

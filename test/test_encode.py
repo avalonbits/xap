@@ -208,6 +208,31 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(self.xap.assemble("nop\r\nnop\r\n"),
                          bytes([0xEA, 0xEA]))
 
+    def test_runs_of_spaces_and_tabs_between_every_token(self):
+        """Every place the scanner skips whitespace, given more than one.
+
+        The skipper is entered only once the character under the cursor has
+        already been classified as a space or a tab, so it steps past that
+        one before looking again. An off-by-one there eats a character of
+        the token that follows, or leaves the cursor on the last space --
+        neither of which a single separator can show.
+        """
+        for source, want in (
+            ("        nop", [0xEA]),
+            ("\t\t\t\tnop", [0xEA]),
+            (" \t \t nop", [0xEA]),
+            ("lda    \t  #$12", [0xA9, 0x12]),
+            ("lda   $34  ,   x", [0xB5, 0x34]),
+            ("lda   (  $34  ,  x  )", [0xA1, 0x34]),
+            ("lda   (  $34  )  ,  y", [0xB1, 0x34]),
+            ("lda   (  $34  )", [0xB2, 0x34]),
+            ("bbr0   $34  ,  $1003", [0x0F, 0x34, 0x00]),
+            ("nop   \t   ; a comment", [0xEA]),
+            ("   \t   \n   \t   nop", [0xEA]),
+        ):
+            self.assertEqual(self.xap.assemble(source, origin=0x1000),
+                             bytes(want), repr(source))
+
     def test_comments(self):
         """A semicolon ends the line, wherever it is and whatever follows."""
         for source, want in (
