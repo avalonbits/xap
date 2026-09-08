@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
 from emu import labels
+from harness import BankedMemory
 from py65.devices.mpu65c02 import MPU
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -37,8 +38,7 @@ LABELS = os.path.join(ROOT, "build", "xap.labels")
 # to be read, so the assembler ate its own input and the profile was of
 # whatever that produced.
 CODE = 0x6000        # where xap.bin is assembled to run, per the Makefile
-OUTPUT = 0x4000      # the object image, as src/xap.asm places it
-RETURN = 0xBF00
+RETURN = 0x0300      # below everything xap claims, and out of the window
 SOURCE = 0xC000
 ZP = 0x22
 
@@ -100,14 +100,14 @@ def main():
         sys.exit("%d bytes of source does not fit above $%04X -- "
                  "lower HOTSPOT_LINES" % (size, SOURCE))
 
-    mpu = MPU()
+    mpu = MPU(memory=BankedMemory())
     for i, b in enumerate(code):
         mpu.memory[CODE + i] = b
     body = source.encode("ascii") + b"\0"
     for i, b in enumerate(body):
         mpu.memory[SOURCE + i] = b
 
-    for addr, value in ((ZP + 0, SOURCE), (ZP + 2, OUTPUT), (ZP + 4, 0x1000)):
+    for addr, value in ((ZP + 0, SOURCE), (ZP + 4, 0x1000)):
         mpu.memory[addr] = value & 0xFF
         mpu.memory[addr + 1] = value >> 8
 

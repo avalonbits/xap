@@ -341,9 +341,9 @@ put .macro
         bne     _put\@
         inc     xapOut+1
         lda     xapOut+1
-        cmp     xapOutTop+1
+        cmp     #>XAP_WINDOW_END
         bne     _put\@
-        jsr     xapPutFlush
+        jsr     xapNextBank
 _put\@
         .endm
 
@@ -351,5 +351,43 @@ xapPut:
         .put
         rts
 
-xapPutFlush:
-        jmp     (xapFlushVec)
+; -----------------------------------------------------------------------
+;   The window has run off its top, so show the next bank and carry on
+;   from the bottom of it.
+;
+;   This is the same test the flat image used to make against a limit in
+;   the zero page, so the byte costs what it always did: the check was
+;   already there, and only what it does when it fires has changed.
+;
+;   Running past the last bank means an object larger than the address
+;   space it is meant to occupy. There is nowhere to put it, so it is
+;   recorded and the rest of the assembly goes into a bank that will not
+;   be written out.
+; -----------------------------------------------------------------------
+
+xapNextBank:
+        lda     #>XAP_WINDOW
+        sta     xapOut+1
+        inc     xapOutBank
+        lda     xapOutBank
+        sta     XAP_RAMBANK
+        cmp     #XAP_IMAGE_LAST
+        bcc     _xnbRoom
+        lda     #XAP_EMEMORY
+        sta     xapObjError
+_xnbRoom:
+        rts
+
+; -----------------------------------------------------------------------
+;   Points the window at the bank the next code byte goes in.
+;
+;   Anything that reaches into the image -- a fixup filling a hole, a
+;   widening shifting the tail -- moves the window to get there, and the
+;   emit path does not check the bank on every byte. So whatever moved it
+;   puts it back through here before another byte is emitted.
+; -----------------------------------------------------------------------
+
+xapOutBankBack:
+        lda     xapOutBank
+        sta     XAP_RAMBANK
+        rts

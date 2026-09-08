@@ -350,16 +350,8 @@ xapOpenObject:
         jsr     OPEN
         bcs     _xooFailed
 
-        lda     #<XAP_IMAGE         ; the whole object is built in memory
-        sta     xapOut
-        lda     #>XAP_IMAGE
-        sta     xapOut+1
-        lda     #<XAP_IMAGE_END
-        sta     xapOutTop
-        lda     #>XAP_IMAGE_END
-        sta     xapOutTop+1
-        clc
-        rts
+        clc                         ; xapBegin puts the image back to its
+        rts                         ; beginning, for both entry points
 
 _xooFailed:
         lda     #XAP_ENOFILE
@@ -375,38 +367,71 @@ _xooFailed:
 ; -----------------------------------------------------------------------
 
 xapObjWrite:
-        lda     xapOut              ; how much was produced
-        sec
-        sbc     xapImage
-        sta     xapTmp
-        lda     xapOut+1
-        sbc     xapImage+1
+        lda     xapPC               ; how much was produced. The program
+        sec                         ; counter and the image advance
+        sbc     xapOrigin           ; together, so this is the size
+        sta     xapTmp              ; without asking the image anything
+        lda     xapPC+1
+        sbc     xapOrigin+1
         sta     xapTmp+1
         lda     xapTmp
         ora     xapTmp+1
-        beq     _xowEmpty
+        beq     _xowViaEmpty
 
         ldx     #XAP_LFN_OBJECT
         jsr     CHKOUT
-        bcs     _xowFailed
+        bcs     _xowViaFailed
 
-        lda     xapImage
-        sta     xapFill
-        lda     xapImage+1
+        lda     #XAP_IMAGE_BANK     ; from the bottom of the first bank
+        sta     xapFillBank
+        sta     XAP_RAMBANK
+        stz     xapFill
+        lda     #>XAP_WINDOW
         sta     xapFill+1
+        bra     _xowLoop
+
+; Walking the banks put the ends of this routine out of reach of its
+; middle, so these are the staging posts they go through.
+_xowViaEmpty:
+        jmp     _xowEmpty
+_xowViaFailed:
+        jmp     _xowFailed
+_xowViaEnd:
+        jmp     _xowEnd
 
 _xowLoop:
         lda     xapTmp
         ora     xapTmp+1
-        beq     _xowEnd
+        beq     _xowViaEnd
 
         lda     xapTmp+1            ; at most one block a call
         bne     _xowBlock
         lda     xapTmp
         cmp     #XAP_BLOCK
-        bcc     _xowSend
+        bcc     _xowBankCap
 _xowBlock:
         lda     #XAP_BLOCK
+
+        ; And never past the top of the bank in view, because the byte
+        ; after it is in a bank nobody can see from here. A block is 255
+        ; bytes and the window ends on a page, so this can only bite in
+        ; the bank's last page.
+_xowBankCap:
+        ldx     xapFill+1
+        cpx     #>(XAP_WINDOW_END - 1)
+        bne     _xowSend
+        pha
+        clc
+        adc     xapFill
+        bcc     _xowFits
+        beq     _xowFits
+        pla                         ; it runs over: send the rest of the
+        lda     #0                  ; bank and come back for the next
+        sec
+        sbc     xapFill
+        bra     _xowSend
+_xowFits:
+        pla
 
 _xowSend:
         pha                         ; the fallback needs the request
@@ -460,7 +485,17 @@ _xowAccount:
         lda     xapTmp+1
         sbc     xapWrote+1
         sta     xapTmp+1
-        bra     _xowLoop
+
+        lda     xapFill+1           ; and off the top of the bank means on
+        cmp     #>XAP_WINDOW_END    ; to the bottom of the next
+        bne     _xowMore
+        lda     #>XAP_WINDOW
+        sta     xapFill+1
+        inc     xapFillBank
+        lda     xapFillBank
+        sta     XAP_RAMBANK
+_xowMore:
+        jmp     _xowLoop
 
 _xowFailed:
         lda     #XAP_ENOFILE
@@ -468,16 +503,6 @@ _xowFailed:
 _xowEnd:
         jsr     CLRCHN
 _xowEmpty:
-        rts
-
-; -----------------------------------------------------------------------
-;   The image is full. There is nowhere to put the rest, and no way to
-;   carry on, so this only records it; the top level reports it.
-; -----------------------------------------------------------------------
-
-xapObjOverflow:
-        lda     #XAP_EMEMORY
-        sta     xapObjError
         rts
 
 ; -----------------------------------------------------------------------

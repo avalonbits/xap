@@ -549,23 +549,14 @@ _xsrWalk:
         jmp     _xsrDone
 _xsrOne:
 
-        ; Where in the image that address lives.
+        ; Where in the image that address lives, and which bank it is in.
         ldy     #XAP_FIX_PC
         lda     (xapFix),y
-        sec
-        sbc     xapOrigin
-        sta     xapTmp
+        tax
         iny
         lda     (xapFix),y
-        sbc     xapOrigin+1
-        sta     xapTmp+1
-        clc
-        lda     xapTmp
-        adc     xapImage
-        sta     xapTmp
-        lda     xapTmp+1
-        adc     xapImage+1
-        sta     xapTmp+1
+        tay
+        jsr     xapImageAt
 
         ldy     #XAP_FIX_KIND
         lda     (xapFix),y
@@ -576,9 +567,35 @@ _xsrOne:
 
         lda     xapValue            ; two bytes, low then high
         sta     (xapTmp)
+
+        ; The two can fall either side of a bank boundary, but only when
+        ; the first is the very last byte of a bank -- once in every 8192
+        ; -- so that case is asked about rather than paid for.
+        lda     xapTmp
+        cmp     #<(XAP_WINDOW_END - 1)
+        bne     _xsrHighByte
+        lda     xapTmp+1
+        cmp     #>(XAP_WINDOW_END - 1)
+        beq     _xsrHighCrosses
+_xsrHighByte:
         ldy     #1
         lda     xapValue+1
         sta     (xapTmp),y
+        bra     _xsrNext
+
+_xsrHighCrosses:
+        ldy     #XAP_FIX_PC         ; found the way the first one was
+        lda     (xapFix),y
+        clc
+        adc     #1
+        tax
+        iny
+        lda     (xapFix),y
+        adc     #0
+        tay
+        jsr     xapImageAt
+        lda     xapValue+1
+        sta     (xapTmp)
         bra     _xsrNext
 
 _xsrLowByte:
@@ -646,10 +663,12 @@ _xsrNext:
         jmp     _xsrWalk
 
 _xsrDone:
+        jsr     xapOutBankBack      ; the window belongs to the emit path
         clc
         rts
 
 _xsrRange:
+        jsr     xapOutBankBack
         lda     #XAP_ERANGE
         sec
         rts
@@ -693,7 +712,20 @@ _xlhExit:
         rts
 
 ; -----------------------------------------------------------------------
-;   Turns the image address of the program counter in YX into xapTmp.
+;   Turns the program counter in YX into the window address of that byte
+;   of the image, in xapTmp, and shows the bank it lives in. The bank
+;   number comes back in A as well, for the caller that has to walk.
+;
+;   Everything above here treats the image as a flat run of bytes. This
+;   is the only place that knows it is really eight banks seen through
+;   one 8K window, and it is where the eight comes from: the offset from
+;   the origin is a sixteen bit number because the program counter is, so
+;   its top three bits are the bank and the rest is the address.
+;
+;   Leaves the window on that bank. The emit path does not set the bank
+;   per byte -- that would cost six cycles on every byte of output to
+;   serve a path that runs on a fixup -- so whatever comes here puts the
+;   window back with xapOutBankBack before another byte is emitted.
 ; -----------------------------------------------------------------------
 
 xapImageAt:
@@ -703,14 +735,49 @@ xapImageAt:
         sta     xapTmp
         tya
         sbc     xapOrigin+1
-        sta     xapTmp+1
+
+        tax                         ; the high byte of the offset carries
+        and     #>(XAP_WINDOW_END - XAP_WINDOW - 1)
+        ora     #>XAP_WINDOW        ; both answers: the address below bit
+        sta     xapTmp+1            ; 13, and the bank above it
+
+        txa
+        lsr     a
+        lsr     a
+        lsr     a
+        lsr     a
+        lsr     a
         clc
-        lda     xapTmp
-        adc     xapImage
-        sta     xapTmp
-        lda     xapTmp+1
-        adc     xapImage+1
-        sta     xapTmp+1
+        adc     #XAP_IMAGE_BANK
+        sta     XAP_RAMBANK
+        rts
+
+; -----------------------------------------------------------------------
+;   Steps the image cursor in xapFill down one byte, into the bank below
+;   if it has run off the bottom of the window, and leaves the window
+;   showing wherever it ended up.
+; -----------------------------------------------------------------------
+
+xapImageBack:
+        lda     xapFill
+        bne     _xibLow
+        lda     xapFill+1
+        cmp     #>XAP_WINDOW
+        bne     _xibHigh
+
+        lda     #>(XAP_WINDOW_END - 1)      ; the top byte of the bank below
+        sta     xapFill+1
+        lda     #$FF
+        sta     xapFill
+        dec     xapFillBank
+        lda     xapFillBank
+        sta     XAP_RAMBANK
+        rts
+
+_xibHigh:
+        dec     xapFill+1
+_xibLow:
+        dec     xapFill
         rts
 
 ; -----------------------------------------------------------------------
@@ -725,50 +792,84 @@ xapImageAt:
 xapWidenHole:
         sta     xapWideOp
 
-        lda     xapOut              ; room for one more byte
-        cmp     #<XAP_IMAGE_END
-        lda     xapOut+1
-        sbc     #>XAP_IMAGE_END
+        ; Room for one more byte. xapOut is always inside the window --
+        ; whatever pushed it off the top wrapped it -- so the only way to
+        ; be out of image is to be out of banks.
+        lda     xapOutBank
+        cmp     #XAP_IMAGE_LAST
         bcs     _xwFull
 
-        ldx     xapHole
-        ldy     xapHole+1
-        jsr     xapImageAt          ; xapTmp is where the hole lives
+        ; The cursor starts one past the top of the image and walks down.
+        ldx     xapPC
+        ldy     xapPC+1
+        jsr     xapImageAt
+        sta     xapFillBank
+        lda     xapTmp
+        sta     xapFill
+        lda     xapTmp+1
+        sta     xapFill+1
+
+        ; How many bytes have to move. Counting them rather than walking
+        ; to an address means the loop never has to compare a bank as
+        ; well, and the program counter says it without any arithmetic on
+        ; the image at all: the image offset of the hole is xapHole minus
+        ; the origin, and of the top is xapPC minus the origin.
+        lda     xapPC
+        sec
+        sbc     xapHole
+        sta     xapTmp
+        lda     xapPC+1
+        sbc     xapHole+1
+        sta     xapTmp+1
 
         ; Copy the tail up a byte, working down from the top so the two
         ; runs do not tread on each other.
-        lda     xapOut
-        sta     xapFill
-        lda     xapOut+1
-        sta     xapFill+1
 _xwShift:
-        lda     xapFill
-        cmp     xapTmp
-        bne     _xwByte
-        lda     xapFill+1
-        cmp     xapTmp+1
+        lda     xapTmp
+        ora     xapTmp+1
         beq     _xwShifted
-_xwByte:
-        lda     xapFill
+        lda     xapTmp
         bne     +
-        dec     xapFill+1
-+       dec     xapFill
+        dec     xapTmp+1
++       dec     xapTmp
+
+        jsr     xapImageBack
+        lda     xapFill+1           ; the top byte of a bank has to go to
+        cmp     #>(XAP_WINDOW_END - 1)   ; the bottom of the next one, and
+        bne     _xwPlain            ; both banks cannot be in view at once
+        lda     xapFill
+        cmp     #$FF
+        bne     _xwPlain
+
+        lda     (xapFill)
+        ldx     xapFillBank
+        inx
+        stx     XAP_RAMBANK
+        sta     XAP_WINDOW
+        lda     xapFillBank         ; back, for the next byte down
+        sta     XAP_RAMBANK
+        bra     _xwShift
+
+_xwPlain:
         lda     (xapFill)
         ldy     #1
         sta     (xapFill),y
         bra     _xwShift
 
 _xwShifted:
-        lda     xapTmp              ; the opcode sits just below the hole
-        bne     +
-        dec     xapTmp+1
-+       dec     xapTmp
+        jsr     xapImageBack        ; the opcode sits just below the hole
         lda     xapWideOp
-        sta     (xapTmp)
+        sta     (xapFill)
+
+        jsr     xapOutBankBack      ; the window belongs to the emit path
 
         inc     xapOut              ; and everything after has moved
         bne     +
         inc     xapOut+1
+        lda     xapOut+1
+        cmp     #>XAP_WINDOW_END
+        bne     +
+        jsr     xapNextBank
 +       inc     xapPC
         bne     +
         inc     xapPC+1

@@ -93,19 +93,29 @@ XAP_LOCALMASK     = 31
 XAP_LOCALUSED     = $1FC0
 XAP_LOCALUSED_END = $2000
 
-; The object image. Fixups write back into code already emitted, which a
-; file that has been flushed cannot do -- so the object is built in
-; memory and written out at the end. That is not giving up the streaming
-; property: object code for this processor is bounded by the address
-; space and source is not, so streaming the thing that can be a megabyte
-; and buffering the thing that cannot exceed 64K is the right way round.
+; The object image, in banked RAM.
 ;
-; 8K rather than the 23.5K it used to be, because the space bought code
-; room instead. The image only has to be as big as the benchmark corpora
-; assemble to, and those are sized to it; the code has to be as big as
-; xap is going to get. See the note above CODEADDR in the Makefile.
-XAP_IMAGE       = $4000
-XAP_IMAGE_END   = $6000             ; 8K, and the code starts here
+; Fixups write back into code already emitted, which a file that has been
+; flushed cannot do -- so the object is built in memory and written out at
+; the end. That is not giving up the streaming property: object code for
+; this processor is bounded by the address space and source is not, so
+; streaming the thing that can be a megabyte and buffering the thing that
+; cannot exceed 64K is the right way round.
+;
+; And 64K is exactly what it gets, because that last sentence says where
+; it belongs. The X16 reaches half a megabyte of RAM through an 8K window
+; at $A000, so eight banks hold the largest object a 65C02 program can
+; possibly be -- and the image stops competing with everything else for
+; the flat 64K the processor can see. It used to take 23.5K of low RAM,
+; then 8K, and the corpora had to be sized to whichever it was.
+;
+; Bank 0 belongs to the KERNAL, so the image starts at 1.
+XAP_WINDOW      = $A000             ; the banked RAM window
+XAP_WINDOW_END  = $C000
+XAP_RAMBANK     = $00               ; which bank the window shows
+XAP_IMAGE_BANK  = 1
+XAP_IMAGE_BANKS = 8                 ; 64K, all a 65C02 program can be
+XAP_IMAGE_LAST  = XAP_IMAGE_BANK + XAP_IMAGE_BANKS
 
 ; -----------------------------------------------------------------------
 ;   Zero page.
@@ -133,7 +143,6 @@ xapBufTop     = XAP_ZP+20           ; end of the source window
 xapFill       = XAP_ZP+22           ; where a refill or flush is working
 xapTmp        = XAP_ZP+24           ; byte counts during refill and flush
 xapWrote      = XAP_ZP+26           ; how much the last block call moved
-xapOutTop     = XAP_ZP+28           ; when the object buffer is full
 xapEOF        = XAP_ZP+30           ; the source file has run out
 xapObjError   = XAP_ZP+31           ; a write failed, reported at the end
 xapName       = XAP_ZP+32           ; source file name
@@ -141,7 +150,6 @@ xapNameLen    = XAP_ZP+34
 xapObjName    = XAP_ZP+35           ; object file name
 xapObjNameLen = XAP_ZP+37
 xapRefillVec  = XAP_ZP+38           ; how to get more source
-xapFlushVec   = XAP_ZP+40           ; what to do with a full object buffer
 xapRunError   = XAP_ZP+42           ; held while the files are closed
 xapRawTop     = XAP_ZP+43           ; end of what was read, past the window
 xapNulSave    = XAP_ZP+45           ; the byte the window terminator covers
@@ -153,7 +161,6 @@ xapFix        = XAP_ZP+55           ; the fixup record in hand
 xapLabelLen   = XAP_ZP+57
 xapUndefined  = XAP_ZP+58           ; how many labels are still not defined
 xapOrigin     = XAP_ZP+60           ; the program counter the image starts at
-xapImage      = XAP_ZP+62           ; where in memory that byte lives
 xapForward    = XAP_ZP+64           ; the operand named a label not yet known
 xapHole       = XAP_ZP+65           ; the address a fixup has to fill
 xapLabelPos   = XAP_ZP+67           ; the cursor, held across a lookup
@@ -171,6 +178,8 @@ xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in,
                                     ; as an index into whichever table
 xapWalkEnd    = XAP_ZP+84           ; where a walk over a heap stops
 xapPatch      = XAP_ZP+86           ; the value is known but may still move
+xapOutBank    = XAP_ZP+87           ; the bank xapOut is pointing into
+xapFillBank   = XAP_ZP+88           ; and the bank a walk over the image is in
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
                                     ; in until the whole file has been read
 
@@ -267,28 +276,27 @@ xapAssemble:
         sta     xapRefillVec
         lda     #>xapNoRefill
         sta     xapRefillVec+1
-        lda     #<xapNoFlush
-        sta     xapFlushVec
-        lda     #>xapNoFlush
-        sta     xapFlushVec+1
-
-        stz     xapOutTop           ; a limit the output cannot reach
-        stz     xapOutTop+1
         stz     xapObjError
         jsr     xapBegin
         bra     xapRun
 
 ; -----------------------------------------------------------------------
-;   Common to both entry points: remember where the image starts and what
-;   address its first byte has, so a fixup can turn one into the other,
-;   and throw away any labels from a previous run.
+;   Common to both entry points: put the image back at its beginning,
+;   remember what address its first byte has so a fixup can turn one into
+;   the other, and throw away any labels from a previous run.
+;
+;   The image always starts at the bottom of the window in the first bank
+;   it owns, so there is nothing to remember about where it is -- only
+;   about what program counter it stands for.
 ; -----------------------------------------------------------------------
 
 xapBegin:
-        lda     xapOut
-        sta     xapImage
-        lda     xapOut+1
-        sta     xapImage+1
+        stz     xapOut
+        lda     #>XAP_WINDOW
+        sta     xapOut+1
+        lda     #XAP_IMAGE_BANK
+        sta     xapOutBank
+        sta     XAP_RAMBANK
         lda     xapPC
         sta     xapOrigin
         lda     xapPC+1
@@ -298,8 +306,6 @@ xapBegin:
 
 xapNoRefill:
         sec                         ; there was never any more
-        rts
-xapNoFlush:
         rts
 
 ; -----------------------------------------------------------------------
@@ -318,11 +324,6 @@ xapAssembleFile:
         sta     xapRefillVec
         lda     #>xapFileRefill
         sta     xapRefillVec+1
-        lda     #<xapObjOverflow
-        sta     xapFlushVec
-        lda     #>xapObjOverflow
-        sta     xapFlushVec+1
-
         jsr     xapBegin
 
         ; Both files are closed whatever happens, so the outcome is put
