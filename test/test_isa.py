@@ -77,6 +77,44 @@ class TestISA(unittest.TestCase):
             else:
                 self.fail("no probe reached mode %s" % name)
 
+    def test_the_key_tables_reject_every_non_letter(self):
+        """The mnemonic scanner reads its first two letters through tables
+        indexed by the character, and takes bit 7 as "not a letter".
+
+        That works only because no real contribution to the key has bit 7
+        set: the first letter's is c1<<2, at most 104, and the second's
+        high half is c1>>3, at most 3. So the test is over all 256 byte
+        values, not over the letters -- what matters is that a digit, a
+        punctuation mark or anything with the high bit already set cannot
+        be mistaken for a letter, and that no letter is rejected.
+        """
+        tables = self.tables()
+        for name in ("xapKey1", "xapKey2Hi"):
+            table = tables[name]
+            self.assertEqual(len(table), 256, name)
+            for b in range(256):
+                letter = b < 128 and chr(b).isalpha()
+                marked = bool(table[b] & 0x80)
+                self.assertEqual(marked, not letter,
+                                 "%s[$%02X] says %s" % (name, b, table[b]))
+
+    def test_the_key_tables_spell_the_same_key_as_before(self):
+        """c1<<10 | c2<<5 | c3, which is what xapFind's table is built on.
+
+        Indexing by the character rather than by the letter number is meant
+        to be a change of representation and nothing else, so this states
+        the packing independently of the generator that emits it.
+        """
+        tables = self.tables()
+        for i in range(26):
+            for c in (ord("A") + i, ord("a") + i):
+                n = i + 1
+                self.assertEqual(tables["xapKey1"][c], (n << 10) >> 8, chr(c))
+                self.assertEqual(tables["xapKey2Hi"][c], (n << 5) >> 8, chr(c))
+                self.assertEqual(tables["xapKey2Lo"][c], (n << 5) & 0xFF,
+                                 chr(c))
+                self.assertEqual(tables["xapLetter"][c], n, chr(c))
+
     def test_the_ident_table_agrees_with_the_class_table(self):
         """The .isident macro reads xapIdentUpper and takes zero to mean
         "not part of a name", instead of reading the class table and

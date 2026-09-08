@@ -409,11 +409,25 @@ def emit(table, out):
     # The key is c1<<10 | c2<<5 | c3. The first letter lands wholly in the
     # high byte as c1<<2 and the third wholly in the low byte, but the second
     # straddles them, so its two halves are looked up rather than shifted out.
-    w("; The second letter's contribution to each half of the key.\n")
-    w("xapLetter2Hi:\n")
-    w(wrap([c >> 3 for c in range(27)]))
-    w("xapLetter2Lo:\n")
-    w(wrap([(c << 5) & 0xFF for c in range(27)]))
+    #
+    # Indexed by the character, not by the letter number that xapLetter gives.
+    # That costs 768 bytes of table and saves ten cycles a mnemonic: the first
+    # two letters no longer need a second indexed load to turn the letter
+    # number into its contribution, and the "is this a letter" test folds into
+    # the same load, because no real contribution has bit 7 set and $80 can
+    # therefore mark everything that is not a letter. The third letter's
+    # contribution is the letter number itself, so it still reads xapLetter.
+    w("; The first letter's whole contribution to the key, c1<<2 in the\n")
+    w("; high byte, and $80 for anything that is not a letter.\n")
+    w("xapKey1:\n")
+    w(wrap([letters[c] << 2 if letters[c] else 0x80 for c in range(256)]))
+    w("\n")
+    w("; The second letter straddles the halves, so each is tabulated.\n")
+    w("; The high half doubles as the letter test, as above.\n")
+    w("xapKey2Hi:\n")
+    w(wrap([letters[c] >> 3 if letters[c] else 0x80 for c in range(256)]))
+    w("xapKey2Lo:\n")
+    w(wrap([(letters[c] << 5) & 0xFF for c in range(256)]))
     w("\n")
 
     # Testing whether a mnemonic has a mode was a loop that shifted the mask

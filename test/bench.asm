@@ -89,3 +89,7 @@ xapBenchCycles:
 ; Where the binary has to be loaded. Emitted so the harness reads it from the
 ; label file rather than being told twice.
 xapBenchLoad = CODEADDR
+
+; And the same ceiling xap.asm checks for itself, applied to xap plus this
+; stub, which is what the emulator actually loads.
+        .cerror * > $9F00, "the bench image has run into the I/O page at $9F00"

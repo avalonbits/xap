@@ -29,30 +29,30 @@
 xapMnemonic:
         stz     xapDigit
 
+        ; The first two letters are tabulated by the character, so one
+        ; load gives the contribution to the key and says whether this is
+        ; a letter at all -- no real contribution has bit 7 set, so $80
+        ; marks everything that is not one.
         lda     (xapSrc),y
         tax
-        lda     xapLetter,x
-        beq     _xmNotAWord
-        asl     a                   ; c1<<2 in the high byte is c1<<10
-        asl     a
+        lda     xapKey1,x           ; c1<<2 in the high byte is c1<<10
+        bmi     _xmNotAWord
         sta     xapKey+1
         iny
 
         lda     (xapSrc),y
         tax
-        lda     xapLetter,x
-        beq     _xmNotAWord
-        tax
-        lda     xapLetter2Hi,x      ; the halves of c2<<5
+        lda     xapKey2Hi,x         ; the halves of c2<<5
+        bmi     _xmNotAWord
         ora     xapKey+1
         sta     xapKey+1
-        lda     xapLetter2Lo,x
+        lda     xapKey2Lo,x
         sta     xapKey
         iny
 
-        lda     (xapSrc),y
-        tax
-        lda     xapLetter,x
+        lda     (xapSrc),y          ; and the third letter's contribution
+        tax                         ; is the letter number itself, which
+        lda     xapLetter,x         ; is what xapLetter already holds
         beq     _xmNotAWord
         ora     xapKey              ; c2<<5 leaves the low five bits clear,
         sta     xapKey              ; so the third letter just drops in

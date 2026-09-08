@@ -23,7 +23,7 @@ BINARY = os.path.join(ROOT, "build", "xap.bin")
 # It used to sit at $3000, which the symbol table grew over as soon as labels
 # arrived -- the assembler read its own hash buckets as source and the tests
 # that noticed looked like assembler bugs.
-CODE = 0xA000        # where xap.bin is assembled to run
+CODE = 0x6000        # where xap.bin is assembled to run, per the Makefile
 OUTPUT = 0x4000      # the object image, as src/xap.asm places it
 RETURN = 0xBF00      # above the code, below the source
 SOURCE = 0xC000      # the text being assembled
