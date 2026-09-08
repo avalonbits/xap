@@ -126,39 +126,30 @@ xapSymFind:
         ; Which table. Locals live apart and are thrown away at the next
         ; global label, so a name in one scope cannot be found from
         ; another, and the two can hold the same name at once.
+        ;
+        ; Both are pairs of parallel byte arrays, so the bucket number is
+        ; the index into both and the head of the chain is two absolute
+        ; indexed loads. Building a pointer to a bucket instead cost the
+        ; better part of thirty cycles a lookup, on a lookup that happens
+        ; twice for every name in the file.
         ldx     xapLocal
         bne     _xsfLocalTable
 
-        asl     a                   ; 256 buckets of two bytes, and the
-        tax                         ; table is page aligned so no carry
-        lda     #<XAP_SYMHASH
-        sta     xapBucket
-        lda     #>XAP_SYMHASH
-        sta     xapBucket+1
-        bra     _xsfBucket
+        tax
+        stx     xapBucket           ; kept for the insert, if it comes to
+        lda     XAP_SYMHASH_LO,x    ; one
+        sta     xapSym
+        lda     XAP_SYMHASH_HI,x
+        sta     xapSym+1
+        bra     _xsfWalk
 
 _xsfLocalTable:
         and     #XAP_LOCALMASK
-        asl     a
         tax
-        lda     #<XAP_LOCALHASH
-        sta     xapBucket
-        lda     #>XAP_LOCALHASH
-        sta     xapBucket+1
-
-_xsfBucket:
-        txa
-        clc
-        adc     xapBucket
-        sta     xapBucket
-        bcc     +
-        inc     xapBucket+1
-+
-        ldy     #0
-        lda     (xapBucket),y
+        stx     xapBucket
+        lda     XAP_LOCALHASH_LO,x
         sta     xapSym
-        iny
-        lda     (xapBucket),y
+        lda     XAP_LOCALHASH_HI,x
         sta     xapSym+1
 
 _xsfWalk:
@@ -264,10 +255,10 @@ _xsfLocalRoom:
 
         cmp     #>XAP_LOCALHEAP_END
         bcc     _xsfLocalHas
-        bne     _xsfFull
+        bne     _xsfViaFull
         lda     xapTmp
         cmp     #<XAP_LOCALHEAP_END
-        bcs     _xsfFull
+        bcs     _xsfViaFull
 
 _xsfLocalHas:
         lda     xapLocalTop
@@ -282,25 +273,38 @@ _xsfLocalHas:
         inc     xapLocalUndef       ; leave, and a full one is checked
 
 _xsfLink:
-        ldy     #0                  ; onto the head of its bucket
-        lda     (xapBucket),y
-        ldx     #XAP_SYM_NEXT
-        pha
-        iny
-        lda     (xapBucket),y
-        ldy     #XAP_SYM_NEXT+1
-        sta     (xapSym),y
-        pla
-        dey
-        sta     (xapSym),y
+        ; Onto the head of its bucket. Which table again, because the two
+        ; arrays are named rather than pointed at -- a branch on the cold
+        ; path, to save the pointer on the hot one.
+        ldx     xapBucket
+        lda     xapLocal
+        bne     _xsfLinkLocal
 
-        ldy     #0
+        ldy     #XAP_SYM_NEXT
+        lda     XAP_SYMHASH_LO,x
+        sta     (xapSym),y
+        iny
+        lda     XAP_SYMHASH_HI,x
+        sta     (xapSym),y
         lda     xapSym
-        sta     (xapBucket),y
-        iny
+        sta     XAP_SYMHASH_LO,x
         lda     xapSym+1
-        sta     (xapBucket),y
+        sta     XAP_SYMHASH_HI,x
+        bra     _xsfBlank
 
+_xsfLinkLocal:
+        ldy     #XAP_SYM_NEXT
+        lda     XAP_LOCALHASH_LO,x
+        sta     (xapSym),y
+        iny
+        lda     XAP_LOCALHASH_HI,x
+        sta     (xapSym),y
+        lda     xapSym
+        sta     XAP_LOCALHASH_LO,x
+        lda     xapSym+1
+        sta     XAP_LOCALHASH_HI,x
+
+_xsfBlank:
         lda     #0                  ; no value, undefined, nothing waiting
         ldy     #XAP_SYM_VALUE
         sta     (xapSym),y
@@ -1062,11 +1066,12 @@ _xraExit:
 
 xapLocalClear:
         lda     #0
-        ldx     #(XAP_LOCALMASK+1)*2
+        ldx     #XAP_LOCALMASK
 _xlcLoop:
-        sta     XAP_LOCALHASH-1,x
+        sta     XAP_LOCALHASH_LO,x
+        sta     XAP_LOCALHASH_HI,x
         dex
-        bne     _xlcLoop
+        bpl     _xlcLoop
         stz     xapLocalCount
         rts
 

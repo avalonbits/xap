@@ -50,7 +50,14 @@ XAP_LABEL       = XAP_BUFFER_END + 1
 XAP_LABEL_MAX   = 31
 
 ; One bucket head per byte of hash, so the hash needs no masking.
+;
+; A bucket head is an address, but the two halves are held as parallel
+; byte arrays rather than as one array of pairs. That way the bucket
+; number is the index into both, so a lookup is two absolute indexed
+; loads: nothing to double, and no sixteen-bit pointer to build first.
 XAP_SYMHASH     = $3100
+XAP_SYMHASH_LO  = XAP_SYMHASH
+XAP_SYMHASH_HI  = XAP_SYMHASH + 256
 XAP_FIXHEAP     = $3300
 XAP_FIXHEAP_END = $4000             ; 3.25K, or 665 forward references
 
@@ -72,7 +79,9 @@ XAP_SYMHEAP_END = $1E00             ; 5.5K, or about 450 labels
 ; these numbers survive.
 XAP_LOCALHEAP     = $1E00
 XAP_LOCALHEAP_END = $1F80
-XAP_LOCALHASH     = $1F80           ; 32 buckets of two bytes
+XAP_LOCALHASH     = $1F80           ; 32 buckets, split as above
+XAP_LOCALHASH_LO  = XAP_LOCALHASH
+XAP_LOCALHASH_HI  = XAP_LOCALHASH + 32
 XAP_LOCALMASK     = 31
 
 ; The object image. Fixups write back into code already emitted, which a
@@ -144,7 +153,8 @@ xapLocalTop   = XAP_ZP+78           ; next free byte of the local heap
 xapLocalCount = XAP_ZP+80           ; locals in this scope, so an empty one
                                     ; costs nothing to leave
 xapLocalUndef = XAP_ZP+81           ; and how many are still not defined
-xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in
+xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in,
+                                    ; as an index into whichever table
 xapWalkEnd    = XAP_ZP+84           ; where a walk over a heap stops
 xapPatch      = XAP_ZP+86           ; the value is known but may still move
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled

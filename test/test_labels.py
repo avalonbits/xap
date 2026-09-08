@@ -199,6 +199,46 @@ class TestLabels(unittest.TestCase):
         self.same("g1:\n_a:\n  jmp _a\ng2:\n_a:\n  jmp _a\n")
         self.same("".join("g%d:\n_a:\n  jmp _a\n" % i for i in range(50)))
 
+    def test_names_that_share_a_bucket(self):
+        """Chosen so the hash puts them in one another's way.
+
+        The bucket tables are pairs of parallel byte arrays indexed by the
+        hash, one pair for globals and one for locals, and the local hash
+        is masked to the smaller table. So three names picked to differ in
+        the full hash and agree in its low five bits share a local bucket
+        and have to chain; a global picked to sit in the global bucket of
+        the same number has to stay clear of them. Ordinary names would
+        land wherever the hash sent them and exercise none of it.
+
+        _l0, _l72 and _l86 hash to 131, 67 and 163 -- all 3 modulo 32 --
+        and cfh hashes to 3.
+        """
+        source = ("cfh:\n"
+                  "_l0:  nop\n"
+                  "_l72: nop\n"
+                  "_l86: nop\n"
+                  "      jmp _l0\n"
+                  "      jmp _l72\n"
+                  "      jmp _l86\n"
+                  "      jmp cfh\n")
+        self.same(source)
+
+        # Forward, so the chain is walked while the records are still
+        # undefined, and again in a second scope so the clear at the scope
+        # boundary has to leave the right buckets empty.
+        forward = ("cfh:\n"
+                   "      jmp _l86\n"
+                   "      jmp _l72\n"
+                   "      jmp _l0\n"
+                   "_l0:  nop\n"
+                   "_l72: nop\n"
+                   "_l86: nop\n"
+                   "gee:\n"
+                   "      jmp _l72\n"
+                   "_l72: nop\n"
+                   "      jmp cfh\n")
+        self.same(forward)
+
     def test_a_local_cannot_be_reached_from_another_scope(self):
         for source in ("g1:\n  jmp _a\ng2:\n_a:\n",
                        "g1:\n_a:\ng2:\n  jmp _a\n"):
