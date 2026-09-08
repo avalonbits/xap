@@ -74,8 +74,8 @@ XAP_SYMHEAP_END = $1E00             ; 5.5K, or about 450 labels
 ; at once, which is a long routine's worth.
 ;
 ; Everything here is squeezed because the flat map is full: 6K of source
-; and object buffers, 3.25K of fixups and 23.5K of image leave this much
-; and no more. A ROM-resident xap puts the lot in banked RAM and none of
+; and object buffers, 3.25K of fixups and 8K of image leave this much and
+; no more. A ROM-resident xap puts the lot in banked RAM and none of
 ; these numbers survive.
 XAP_LOCALHEAP     = $1E00
 XAP_LOCALHEAP_END = $1F80
@@ -99,8 +99,13 @@ XAP_LOCALUSED_END = $2000
 ; property: object code for this processor is bounded by the address
 ; space and source is not, so streaming the thing that can be a megabyte
 ; and buffering the thing that cannot exceed 64K is the right way round.
+;
+; 8K rather than the 23.5K it used to be, because the space bought code
+; room instead. The image only has to be as big as the benchmark corpora
+; assemble to, and those are sized to it; the code has to be as big as
+; xap is going to get. See the note above CODEADDR in the Makefile.
 XAP_IMAGE       = $4000
-XAP_IMAGE_END   = $9E00             ; 23.5K, up to where the KERNAL starts
+XAP_IMAGE_END   = $6000             ; 8K, and the code starts here
 
 ; -----------------------------------------------------------------------
 ;   Zero page.
@@ -552,3 +557,20 @@ xapSkipSpace:
         .include "encode.asm"
         .include "file.asm"
         .include "isa.inc"
+
+; -----------------------------------------------------------------------
+;   Where the code has to stop.
+;
+;   Nothing in the host tests can see this. py65 gives xap 64K of flat RAM,
+;   so an image that runs off the end of the machine's RAM passes every one
+;   of them and then fails every emulator test with a nonsense error code
+;   read out of whatever is really at that address. Checking it here costs
+;   nothing and fails at the moment the table is added rather than an hour
+;   later.
+;
+;   $9F00 is the I/O page. Below it is RAM the flat map has already spent,
+;   which is why CODEADDR sits where it does; above it is more I/O and then
+;   the banked windows.
+; -----------------------------------------------------------------------
+
+        .cerror * > $9F00, "xap has run into the I/O page at $9F00"

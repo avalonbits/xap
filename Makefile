@@ -34,17 +34,30 @@ SRCDIR   = src
 BUILDDIR = build
 TESTDIR  = test
 
-# xap is assembled for $A000, the start of the X16's banked RAM window. Nothing
-# in it is position dependent yet; the address only has to be somewhere a test
-# can load it.
-CODEADDR = A000
+# Where xap is assembled to run: just above the object image, with the 15.5K
+# from there to the I/O page at $9F00 to grow into. Nothing in xap is position
+# dependent, so this only has to be somewhere a test can load it -- but it has
+# to be somewhere with room.
+#
+# It used to be $A000, the start of the X16's 8K banked RAM window, because the
+# 23.5K object image left nothing else free. That put a ceiling on the code
+# nothing in the host tests could see: py65 has RAM the whole way up, so an
+# image that overran $C000 -- where the real machine's ROM starts -- passed
+# every host test and failed every emulator test with a nonsense error code
+# read out of ROM. The image is 8K now and the code has proper room, which is
+# the right way round: the image only has to hold what the corpora assemble to,
+# and a ROM bank is 16K, so that is the size the code should be measured
+# against.
+CODEADDR = 6000
 
 # The benchmark corpus: every legal instruction, evenly distributed.
 #
 # Sized so that what it assembles to fits the object image, which the flat
-# test memory map caps at 23.5K ($4000 to $9E00). A ROM-resident xap would
-# put the image in banked RAM and not care; here the corpus has to.
-CORPUS_SIZE ?= 112K
+# test memory map caps at 8K ($4000 to $6000). A ROM-resident xap would put
+# the image in banked RAM and not care; here the corpus has to. Cycles a byte
+# does not depend on how long the file is, so a corpus that fits says the same
+# thing a larger one would.
+CORPUS_SIZE ?= 38K
 
 # How much of a line to assemble. 5 is the whole assembler; lower values stop
 # after a phase so the benchmark can attribute cost by difference.

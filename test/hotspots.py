@@ -36,7 +36,7 @@ LABELS = os.path.join(ROOT, "build", "xap.labels")
 # all three. An earlier layout put the output where the source still had lines
 # to be read, so the assembler ate its own input and the profile was of
 # whatever that produced.
-CODE = 0xA000
+CODE = 0x6000        # where xap.bin is assembled to run, per the Makefile
 OUTPUT = 0x4000      # the object image, as src/xap.asm places it
 RETURN = 0xBF00
 SOURCE = 0xC000
