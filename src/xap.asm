@@ -84,6 +84,15 @@ XAP_LOCALHASH_LO  = XAP_LOCALHASH
 XAP_LOCALHASH_HI  = XAP_LOCALHASH + 32
 XAP_LOCALMASK     = 31
 
+; Which buckets this scope has actually put something in, one byte each,
+; appended as the records are made. Emptying the table at a scope
+; boundary then costs two stores a local rather than sixty-four -- and a
+; scope holds a handful of locals where the table holds thirty-two
+; buckets. Bounded by the local heap: the shortest record a name can make
+; is nine bytes, so 384 bytes of heap cannot hold more than 42 of them.
+XAP_LOCALUSED     = $1FC0
+XAP_LOCALUSED_END = $2000
+
 ; The object image. Fixups write back into code already emitted, which a
 ; file that has been flushed cannot do -- so the object is built in
 ; memory and written out at the end. That is not giving up the streaming

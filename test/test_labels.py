@@ -239,6 +239,31 @@ class TestLabels(unittest.TestCase):
                    "      jmp cfh\n")
         self.same(forward)
 
+    def test_a_full_scope_is_emptied_at_its_boundary(self):
+        """The table is emptied through a list of the buckets that were
+        used, one entry per record, so a scope that fills the local heap
+        is the case where that list is longest and where an entry going
+        missing leaves a stale bucket behind.
+
+        Thirty locals is about as many as 384 bytes of local heap holds.
+        """
+        n = 30
+        names = ["_n%02d" % i for i in range(n)]
+
+        # Defined and used in one scope, then all of it defined again in
+        # the next at different addresses.
+        first = ["g1:"] + ["%s: nop" % m for m in names] \
+            + ["    jmp %s" % m for m in names]
+        second = ["g2:"] + ["    nop"] \
+            + ["%s: nop" % m for m in names] \
+            + ["    jmp %s" % m for m in names]
+        self.same("\n".join(first + second) + "\n")
+
+        # And none of them survives into a scope that does not define it.
+        with self.assertRaises(Error) as e:
+            self.xap.assemble("\n".join(first + ["g2:", "    jmp _n17"]) + "\n")
+        self.assertEqual(e.exception.code, E_UNDEF)
+
     def test_a_local_cannot_be_reached_from_another_scope(self):
         for source in ("g1:\n  jmp _a\ng2:\n_a:\n",
                        "g1:\n_a:\ng2:\n  jmp _a\n"):

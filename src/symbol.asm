@@ -269,6 +269,9 @@ _xsfLocalHas:
         sta     xapLocalTop
         lda     xapTmp+1
         sta     xapLocalTop+1
+        ldx     xapLocalCount       ; note the bucket, so that emptying
+        lda     xapBucket           ; the table at the end of the scope
+        sta     XAP_LOCALUSED,x     ; touches only what was used
         inc     xapLocalCount       ; so an empty scope costs nothing to
         inc     xapLocalUndef       ; leave, and a full one is checked
 
@@ -1065,15 +1068,31 @@ _xraExit:
 ; -----------------------------------------------------------------------
 
 xapLocalClear:
-        lda     #0
-        ldx     #XAP_LOCALMASK
+        ; Only the buckets this scope wrote to. A scope with two locals in
+        ; it left two entries behind, and walking those beats walking
+        ; thirty-two buckets that are almost all still empty.
+        ;
+        ; The count and the list agree by construction: every record made
+        ; in the local heap appends one entry and bumps the count, and
+        ; nothing else moves either.
+        ldy     xapLocalCount
+        beq     _xlcDone
 _xlcLoop:
-        sta     XAP_LOCALHASH_LO,x
-        sta     XAP_LOCALHASH_HI,x
-        dex
-        bpl     _xlcLoop
+        dey
+        ldx     XAP_LOCALUSED,y
+        stz     XAP_LOCALHASH_LO,x
+        stz     XAP_LOCALHASH_HI,x
+        cpy     #0
+        bne     _xlcLoop
+_xlcDone:
         stz     xapLocalCount
         rts
+
+; The list is indexed by the count, so it has to hold as many entries as
+; the heap can make records -- which is the heap over the shortest record
+; a one-character name can make.
+XAP_LOCAL_MAXREC = (XAP_LOCALHEAP_END - XAP_LOCALHEAP) / (XAP_SYM_NAME + 1)
+        .cerror XAP_LOCAL_MAXREC > XAP_LOCALUSED_END - XAP_LOCALUSED, "the local bucket list is too small for a full heap"
 
 ; -----------------------------------------------------------------------
 ;   Ends the current local scope, which a global label definition does.
