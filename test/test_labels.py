@@ -186,6 +186,72 @@ class TestLabels(unittest.TestCase):
         self.same("a:\n  lda a\n")
         self.same("a:\n  jsr a\n")
 
+    # ---- local labels --------------------------------------------------
+
+    def test_a_local_label_lives_between_two_global_ones(self):
+        """64tass has the same rule for an underscore name, so it can say."""
+        self.same("g:\n_a:\n  jmp _a\n")
+        self.same("g:\n  jmp _a\n_a:\n")
+        self.same("g:\n  bne _s\n  nop\n_s:\n  nop\n")
+
+    def test_the_same_local_name_in_two_scopes(self):
+        """Which is the whole point of them."""
+        self.same("g1:\n_a:\n  jmp _a\ng2:\n_a:\n  jmp _a\n")
+        self.same("".join("g%d:\n_a:\n  jmp _a\n" % i for i in range(50)))
+
+    def test_a_local_cannot_be_reached_from_another_scope(self):
+        for source in ("g1:\n  jmp _a\ng2:\n_a:\n",
+                       "g1:\n_a:\ng2:\n  jmp _a\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, E_UNDEF, source)
+
+    def test_an_undefined_local_is_caught_where_its_scope_ends(self):
+        """At the global label that ends it, or at the end of the file if
+        none ever comes -- either way it is not left to be a mystery."""
+        for source in ("g1:\n  jmp _a\ng2:\n", "g:\n  jmp _a\n  nop\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, E_UNDEF, source)
+
+    def test_a_local_may_be_defined_before_any_global(self):
+        self.same("_a:\n  jmp _a\n")
+
+    def test_a_local_defined_twice_in_one_scope(self):
+        with self.assertRaises(Error) as e:
+            self.xap.assemble("g:\n_a:\n_a:\n")
+        self.assertEqual(e.exception.code, E_REDEF)
+
+    def test_an_at_sign_starts_one_too(self):
+        """Which 64tass does not accept, so this asserts on xap alone.
+
+        The ROM assembler's manual names both: "labels beginning with
+        underscore (_) or at sign (@) are local labels".
+        """
+        self.assertEqual(self.xap.assemble("g:\n@loop:\n  bne @loop\n"),
+                         bytes([0xD0, 0xFE]))
+        self.assertEqual(self.xap.assemble("g1:\n@a:\ng2:\n@a:\n"), b"")
+
+    def test_a_name_may_hold_a_period(self):
+        """The manual's character set: alphanumerics, underscore, at sign
+        and period, after an alphabetic first character.
+
+        64tass reads a period as a member operator and rejects the name
+        outright, so this asserts on xap alone. Following the assembler xap
+        stands in for matters more.
+        """
+        self.assertEqual(self.xap.assemble("a.b:\n  jmp a.b\n"),
+                         bytes([0x4C, 0x00, 0x10]))
+        self.same("a_b:\n  jmp a_b\n")
+
+    def test_globals_are_still_reachable_from_inside_a_scope(self):
+        self.same("g:\n_a:\n  jmp g\n  jmp _a\n")
+
+    def test_many_locals_in_one_scope(self):
+        source = "g:\n" + "".join("_l%d:\n  jmp _l%d\n" % (i, i)
+                                  for i in range(25))
+        self.same(source)
+
     # ---- deciding how wide a forward reference is ----------------------
 
     def test_a_forward_reference_above_zero_page_is_absolute(self):
@@ -232,6 +298,28 @@ class TestLabels(unittest.TestCase):
                   "  lda f2\n" + "  nop\n" * 300 + "f2:\n")
         self.assertEqual(self.xap.assemble(source, origin=0x0010),
                          self.tass(source, origin=0x0010))
+
+    def test_a_reference_already_settled_can_still_move(self):
+        """A backward reference is not final once anything has been guessed.
+
+        The value is known when it is read, so it goes straight into the
+        code -- and then a guess further up turns out wrong, the image
+        shifts, and the label it named has moved. It has to be left as a
+        hole like a forward reference, and only the width comes from the
+        value.
+
+        This was wrong from the day sizes started being guessed. Both
+        global and local labels had it; local labels only made it easier
+        to run into.
+        """
+        for source, what in (
+            ("  lda f\n" + "  nop\n" * 300 + "s:\n  jmp s\nf:\n", "global"),
+            ("g:\n  lda f\n" + "  nop\n" * 300 + "_s:\n  jmp _s\nf:\n",
+             "local"),
+            ("  lda f\n" + "  nop\n" * 300 + "s:\n  bne s\nf:\n", "branch"),
+        ):
+            self.assertEqual(self.xap.assemble(source, origin=0x0010),
+                             self.tass(source, origin=0x0010), what)
 
     def test_a_mnemonic_with_one_width_never_guesses(self):
         """JMP has no zero page mode, so its size is settled whatever the

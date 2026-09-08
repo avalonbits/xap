@@ -44,7 +44,7 @@ CODEADDR = A000
 # Sized so that what it assembles to fits the object image, which the flat
 # test memory map caps at 23.5K ($4000 to $9E00). A ROM-resident xap would
 # put the image in banked RAM and not care; here the corpus has to.
-CORPUS_SIZE ?= 128K
+CORPUS_SIZE ?= 112K
 
 # How much of a line to assemble. 5 is the whole assembler; lower values stop
 # after a phase so the benchmark can attribute cost by difference.
@@ -91,9 +91,9 @@ $(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR) need-tass
 # Two corpora. isa_even weights all 212 opcodes alike, so nothing can hide;
 # isa_real follows corpus/real.json, counted from real code by scan_isa.py, so
 # the number means something about how xap will feel.
-# How many labels the degenerate corpus uses. The heaps give out somewhere
-# between 520 and 560 in the current flat memory map.
-DEGENERATE_LABELS ?= 480
+# How many labels the degenerate corpus uses. Bounded by the symbol heap,
+# which the local label tables took a slice of.
+DEGENERATE_LABELS ?= 400
 
 CORPORA = $(BUILDDIR)/isa_even.asm $(BUILDDIR)/isa_real.asm \
 	  $(BUILDDIR)/isa_jump_degenerate.asm

@@ -26,6 +26,7 @@ xapOperand:
         ; forward reference would otherwise inherit the flag and be told
         ; its mode was too narrow for a value it does not have.
         stz     xapForward
+        stz     xapPatch
 
         .skipspace
         .atend

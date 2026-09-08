@@ -88,6 +88,12 @@ LABEL_CAPABLE = {"abs", "abx", "aby", "iabs", "iabx", "rel", "zprel"}
 LABEL_DEFINITION_RATE = 0.044
 LABEL_REFERENCE_RATE = 0.9
 
+# And 2.8% of lines define a local one -- a name that lives only until the
+# next global label, so two scopes can hold the same name without meeting.
+# Underscore rather than at sign, because 64tass takes the first and not the
+# second, and a corpus it cannot read is no use as an oracle.
+LOCAL_DEFINITION_RATE = 0.028
+
 # How far a reference reaches, in bytes of object code. Real code mostly
 # calls nearby and loops locally; this keeps the number of holes held open at
 # once in the same range that real source produces.
@@ -209,6 +215,7 @@ def build(order, shapes, count, layout, origin, rng):
 
     items = []
     blank_acc = comment_acc = trailing_acc = label_acc = 0.0
+    local_acc = 0.0
     remark = 0
     i = 0
 
@@ -216,6 +223,7 @@ def build(order, shapes, count, layout, origin, rng):
         blank_acc += blank_rate
         comment_acc += comment_rate
         label_acc += LABEL_DEFINITION_RATE
+        local_acc += LOCAL_DEFINITION_RATE
 
         if blank_acc >= 1.0:
             blank_acc -= 1.0
@@ -230,6 +238,10 @@ def build(order, shapes, count, layout, origin, rng):
         if label_acc >= 1.0:
             label_acc -= 1.0
             items.append({"kind": "label"})
+            continue
+        if local_acc >= 1.0:
+            local_acc -= 1.0
+            items.append({"kind": "local"})
             continue
 
         key = order[i % len(order)]
@@ -246,13 +258,26 @@ def build(order, shapes, count, layout, origin, rng):
         i += 1
 
     # Where everything lands, and so where every label is.
+    # Where everything lands, and which scope it lands in. A global label
+    # ends the scope before it, so a local is only in view from between the
+    # same two globals it was defined between.
     pc = origin
     labels = []
+    scope = 0
+    locals_here = []
     for n, item in enumerate(items):
         item["pc"] = pc
+        item["scope"] = scope
         if item["kind"] == "label":
             item["name"] = "L%d" % len(labels)
-            labels.append((item["name"], pc))
+            labels.append((item["name"], pc, scope))
+            scope += 1
+            locals_here = []
+        elif item["kind"] == "local":
+            item["name"] = "_s%d" % len(locals_here)
+            item["scope"] = scope
+            locals_here.append((item["name"], pc, scope))
+            labels.append((item["name"], pc, scope))
         pc += item.get("length", 0)
 
     # Which label each reference names. Half look back and half look forward,
@@ -276,7 +301,7 @@ def build(order, shapes, count, layout, origin, rng):
         if kind == "comment":
             out.append(INDENT + item["text"])
             continue
-        if kind == "label":
+        if kind in ("label", "local"):
             out.append("%s:" % item["name"])
             continue
 
@@ -288,18 +313,22 @@ def build(order, shapes, count, layout, origin, rng):
             if reference_acc >= 1.0:
                 reference_acc -= 1.0
                 here = item["pc"]
+                # A local is only reachable from its own scope.
+                mine = [(nm, at) for e in labels
+                        for nm, at in [(e[0], e[1])]
+                        if not nm.startswith("_") or e[2] == item["scope"]]
                 if mode in ("rel", "zprel"):
-                    reach = [nm for nm, at in labels
+                    reach = [nm for nm, at in mine
                              if -128 <= at - (here + item["length"]) <= 127]
                 else:
-                    reach = [nm for nm, at in labels
+                    reach = [nm for nm, at in mine
                              if abs(at - here) <= LABEL_REACH]
                 if reach:
                     # Alternate which direction is preferred, so neither the
                     # settled path nor the fixup path is the only one taken.
-                    back = [nm for nm in reach
-                            if dict(labels)[nm] <= here]
-                    fwd = [nm for nm in reach if dict(labels)[nm] > here]
+                    at_of = {e[0]: e[1] for e in labels}
+                    back = [nm for nm in reach if at_of[nm] <= here]
+                    fwd = [nm for nm in reach if at_of[nm] > here]
                     pool = (back or fwd) if (n & 1) else (fwd or back)
                     target = rng.choice(pool)
 
@@ -444,10 +473,11 @@ def main():
                 and re.search(r"\bL\d+\b", l))
     print("%s: %d bytes, %d lines, %s"
           % (args.output, len(text), lines, label))
-    print("  all %d instructions present, %d labels on %.1f%% of lines, "
-          "%.0f%% of instructions take a name"
-          % (len(used), labels, 100.0 * labels / lines,
-             100.0 * named / max(instrs, 1)))
+    globals_ = sum(1 for l in text.splitlines() if re.match(r"^L\d+:", l))
+    print("  all %d instructions present, %d global and %d local labels "
+          "(%.1f%% of lines), %.0f%% of instructions take a name"
+          % (len(used), globals_, labels - globals_,
+             100.0 * labels / lines, 100.0 * named / max(instrs, 1)))
     print("  object code $1000 to $%04X, %d bytes" % (end, end - 0x1000))
     if end - 0x1000 > IMAGE_LIMIT:
         sys.exit("that is more object code than the image holds (%d bytes) --"

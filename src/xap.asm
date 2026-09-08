@@ -59,7 +59,21 @@ XAP_FIXHEAP_END = $4000             ; 3.25K, or 665 forward references
 ; would put all of this in banked RAM, where there is as much as anyone
 ; needs; this flat map is what the tests run against.
 XAP_SYMHEAP     = $0800
-XAP_SYMHEAP_END = $2000             ; 6K, or about 460 labels
+XAP_SYMHEAP_END = $1E00             ; 5.5K, or about 450 labels
+
+; Local labels live apart and the whole lot is thrown away at every global
+; label, so this only has to hold one scope at a time. Real source has
+; about six tenths of a local per global scope; 384 bytes is around thirty
+; at once, which is a long routine's worth.
+;
+; Everything here is squeezed because the flat map is full: 6K of source
+; and object buffers, 3.25K of fixups and 23.5K of image leave this much
+; and no more. A ROM-resident xap puts the lot in banked RAM and none of
+; these numbers survive.
+XAP_LOCALHEAP     = $1E00
+XAP_LOCALHEAP_END = $1F80
+XAP_LOCALHASH     = $1F80           ; 32 buckets of two bytes
+XAP_LOCALMASK     = 31
 
 ; The object image. Fixups write back into code already emitted, which a
 ; file that has been flushed cannot do -- so the object is built in
@@ -125,6 +139,14 @@ xapWideOp     = XAP_ZP+70           ; the opcode to swap in if one widens
 xapNarrow     = XAP_ZP+71           ; this operand was emitted optimistically
 xapWalk       = XAP_ZP+72           ; walks the symbol heap end to end
 xapFixFree    = XAP_ZP+75           ; retired fixup records, for reuse
+xapLocal      = XAP_ZP+77           ; the name being read is a local one
+xapLocalTop   = XAP_ZP+78           ; next free byte of the local heap
+xapLocalCount = XAP_ZP+80           ; locals in this scope, so an empty one
+                                    ; costs nothing to leave
+xapLocalUndef = XAP_ZP+81           ; and how many are still not defined
+xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in
+xapWalkEnd    = XAP_ZP+84           ; where a walk over a heap stops
+xapPatch      = XAP_ZP+86           ; the value is known but may still move
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
                                     ; in until the whole file has been read
 
@@ -331,7 +353,8 @@ xapRun:
 _xrFilled:
         lda     xapUndefined        ; and nothing may still be waiting
         ora     xapUndefined+1
-        bne     _xrUndefined
+        ora     xapLocalUndef       ; including the last scope, which no
+        bne     _xrUndefined        ; global label ever came along to end
         lda     #XAP_OK
         clc
 _xrDone:

@@ -82,7 +82,15 @@ _xsrClear:
         stz     xapDeferred
         stz     xapFixFree
         stz     xapFixFree+1
-        rts
+
+        stz     xapLocalCount
+        stz     xapLocalUndef
+        stz     xapLocal
+        lda     #<XAP_LOCALHEAP
+        sta     xapLocalTop
+        lda     #>XAP_LOCALHEAP
+        sta     xapLocalTop+1
+        jmp     xapLocalClear
 
 ; -----------------------------------------------------------------------
 ;   Hashes the name in XAP_LABEL, length xapLabelLen, into A.
@@ -114,13 +122,43 @@ _xshLoop:
 
 xapSymFind:
         jsr     xapSymHash
-        asl     a                   ; two bytes a bucket, and the table is
-        tax                         ; page aligned so this cannot carry out
-        stx     xapFix              ; keep the bucket for a possible insert
 
-        lda     XAP_SYMHASH,x
+        ; Which table. Locals live apart and are thrown away at the next
+        ; global label, so a name in one scope cannot be found from
+        ; another, and the two can hold the same name at once.
+        ldx     xapLocal
+        bne     _xsfLocalTable
+
+        asl     a                   ; 256 buckets of two bytes, and the
+        tax                         ; table is page aligned so no carry
+        lda     #<XAP_SYMHASH
+        sta     xapBucket
+        lda     #>XAP_SYMHASH
+        sta     xapBucket+1
+        bra     _xsfBucket
+
+_xsfLocalTable:
+        and     #XAP_LOCALMASK
+        asl     a
+        tax
+        lda     #<XAP_LOCALHASH
+        sta     xapBucket
+        lda     #>XAP_LOCALHASH
+        sta     xapBucket+1
+
+_xsfBucket:
+        txa
+        clc
+        adc     xapBucket
+        sta     xapBucket
+        bcc     +
+        inc     xapBucket+1
++
+        ldy     #0
+        lda     (xapBucket),y
         sta     xapSym
-        lda     XAP_SYMHASH+1,x
+        iny
+        lda     (xapBucket),y
         sta     xapSym+1
 
 _xsfWalk:
@@ -167,7 +205,11 @@ _xsfNext:
 ; -----------------------------------------------------------------------
 
 _xsfCreate:
-        ; Room for the fixed part and the name.
+        ; Room for the fixed part and the name, in whichever heap this
+        ; name belongs to.
+        ldx     xapLocal
+        bne     _xsfLocalRoom
+
         clc
         lda     xapSymTop
         adc     #XAP_SYM_NAME
@@ -185,32 +227,79 @@ _xsfCreate:
 
         cmp     #>XAP_SYMHEAP_END
         bcc     _xsfRoom
-        bne     _xsfFull
+        bne     _xsfViaFull
         lda     xapTmp
         cmp     #<XAP_SYMHEAP_END
-        bcs     _xsfFull
+        bcs     _xsfViaFull
+
+_xsfViaFull:
+        jmp     _xsfFull
 
 _xsfRoom:
         lda     xapSymTop
         sta     xapSym
         lda     xapSymTop+1
         sta     xapSym+1
-        lda     xapTmp              ; the heap grows past it
+        lda     xapTmp
         sta     xapSymTop
         lda     xapTmp+1
         sta     xapSymTop+1
+        bra     _xsfLink
 
-        ldx     xapFix              ; onto the head of its bucket
-        lda     XAP_SYMHASH,x
-        ldy     #XAP_SYM_NEXT
-        sta     (xapSym),y
-        lda     XAP_SYMHASH+1,x
+_xsfLocalRoom:
+        clc
+        lda     xapLocalTop
+        adc     #XAP_SYM_NAME
+        sta     xapTmp
+        lda     xapLocalTop+1
+        adc     #0
+        sta     xapTmp+1
+        clc
+        lda     xapTmp
+        adc     xapLabelLen
+        sta     xapTmp
+        lda     xapTmp+1
+        adc     #0
+        sta     xapTmp+1
+
+        cmp     #>XAP_LOCALHEAP_END
+        bcc     _xsfLocalHas
+        bne     _xsfFull
+        lda     xapTmp
+        cmp     #<XAP_LOCALHEAP_END
+        bcs     _xsfFull
+
+_xsfLocalHas:
+        lda     xapLocalTop
+        sta     xapSym
+        lda     xapLocalTop+1
+        sta     xapSym+1
+        lda     xapTmp
+        sta     xapLocalTop
+        lda     xapTmp+1
+        sta     xapLocalTop+1
+        inc     xapLocalCount       ; so an empty scope costs nothing to
+        inc     xapLocalUndef       ; leave, and a full one is checked
+
+_xsfLink:
+        ldy     #0                  ; onto the head of its bucket
+        lda     (xapBucket),y
+        ldx     #XAP_SYM_NEXT
+        pha
         iny
+        lda     (xapBucket),y
+        ldy     #XAP_SYM_NEXT+1
         sta     (xapSym),y
+        pla
+        dey
+        sta     (xapSym),y
+
+        ldy     #0
         lda     xapSym
-        sta     XAP_SYMHASH,x
+        sta     (xapBucket),y
+        iny
         lda     xapSym+1
-        sta     XAP_SYMHASH+1,x
+        sta     (xapBucket),y
 
         lda     #0                  ; no value, undefined, nothing waiting
         ldy     #XAP_SYM_VALUE
@@ -238,10 +327,14 @@ _xsfCopy:
         cpy     #XAP_SYM_NAME
         bne     _xsfCopy
 
+        lda     xapLocal            ; a local one is counted in its scope
+        bne     _xsfCreated
+
         inc     xapUndefined        ; one more waiting to be defined
-        bne     +
+        bne     _xsfCreated
         inc     xapUndefined+1
-+       sec                          ; created
+_xsfCreated:
+        sec                         ; created
         rts
 
 _xsfFull:
@@ -282,10 +375,16 @@ _xsdSet:
         lda     #XAP_SYM_DEFINED|XAP_SYM_ADDRESS
         sta     (xapSym),y
 
+        lda     xapLocal            ; counted in its own scope
+        beq     _xsdGlobalCount
+        dec     xapLocalUndef
+        bra     _xsdCounted
+_xsdGlobalCount:
         lda     xapUndefined        ; one fewer outstanding
         bne     +
         dec     xapUndefined+1
 +       dec     xapUndefined
+_xsdCounted:
 
         ; Sizes before values: a widening moves code, and moving code
         ; changes addresses that have not been written anywhere yet
@@ -567,6 +666,14 @@ xapLabelHere:
         bne     +
         iny
 +
+        lda     xapLocal            ; a global label ends the scope the
+        bne     _xlhScope           ; locals before it belonged to
+        sty     xapLabelPos
+        jsr     xapLocalEnd
+        ldy     xapLabelPos
+        bcs     _xlhExit
+
+_xlhScope:
         lda     xapPC               ; a label is where it stands
         sta     xapValue
         lda     xapPC+1
@@ -676,16 +783,31 @@ _xwFull:
 ; -----------------------------------------------------------------------
 
 _xwMoveLabels:
-        lda     #<XAP_SYMHEAP
+        lda     #<XAP_SYMHEAP       ; the globals
         sta     xapFill
         lda     #>XAP_SYMHEAP
         sta     xapFill+1
+        lda     xapSymTop
+        sta     xapWalkEnd
+        lda     xapSymTop+1
+        sta     xapWalkEnd+1
+        jsr     _xwMoveRange
 
+        lda     #<XAP_LOCALHEAP     ; and the scope in hand, which sits
+        sta     xapFill             ; above the shift just as often
+        lda     #>XAP_LOCALHEAP
+        sta     xapFill+1
+        lda     xapLocalTop
+        sta     xapWalkEnd
+        lda     xapLocalTop+1
+        sta     xapWalkEnd+1
+
+_xwMoveRange:
 _xwmLoop:
         lda     xapFill             ; reached the top of the heap?
-        cmp     xapSymTop
+        cmp     xapWalkEnd
         lda     xapFill+1
-        sbc     xapSymTop+1
+        sbc     xapWalkEnd+1
         bcs     _xwmDone
 
         ldy     #XAP_SYM_FLAGS
@@ -865,12 +987,32 @@ xapResolveAll:
         sta     xapWalk
         lda     #>XAP_SYMHEAP
         sta     xapWalk+1
+        lda     xapSymTop
+        sta     xapWalkEnd
+        lda     xapSymTop+1
+        sta     xapWalkEnd+1
+        jsr     _xraRange
+        bcs     _xraExit
 
+        ; The local heap as well. Nothing is filled in while a size is in
+        ; doubt, so a scope that has been left still holds records with
+        ; holes hanging off them -- which is why leaving one does not give
+        ; the records back while anything is deferred.
+        lda     #<XAP_LOCALHEAP
+        sta     xapWalk
+        lda     #>XAP_LOCALHEAP
+        sta     xapWalk+1
+        lda     xapLocalTop
+        sta     xapWalkEnd
+        lda     xapLocalTop+1
+        sta     xapWalkEnd+1
+
+_xraRange:
 _xraLoop:
         lda     xapWalk              ; reached the top of the heap?
-        cmp     xapSymTop
+        cmp     xapWalkEnd
         lda     xapWalk+1
-        sbc     xapSymTop+1
+        sbc     xapWalkEnd+1
         bcs     _xraDone
 
         lda     xapWalk
@@ -911,4 +1053,62 @@ _xraNext:
 _xraDone:
         clc
 _xraFailed:
+_xraExit:
+        rts
+
+; -----------------------------------------------------------------------
+;   Empties the local bucket table.
+; -----------------------------------------------------------------------
+
+xapLocalClear:
+        lda     #0
+        ldx     #(XAP_LOCALMASK+1)*2
+_xlcLoop:
+        sta     XAP_LOCALHASH-1,x
+        dex
+        bne     _xlcLoop
+        stz     xapLocalCount
+        rts
+
+; -----------------------------------------------------------------------
+;   Ends the current local scope, which a global label definition does.
+;
+;   Anything still waiting to be defined was never going to be, so this is
+;   where an undefined local is caught -- at the end of the scope it
+;   belonged to rather than at the end of the file.
+;
+;   The end of file catches it too, since the count is never cleared, so
+;   this changes where the error is reported and not whether there is one.
+;   That is worth nothing until errors carry a position, and five cycles a
+;   global label until then.
+;
+;   The records go back only when nothing is deferred. While a size is
+;   still in doubt no hole has been filled yet, and a widening later on
+;   could move a label in a scope already left; the record has to survive
+;   to be resolved at the end. Lookups cannot reach it either way, because
+;   the buckets are cleared regardless.
+; -----------------------------------------------------------------------
+
+xapLocalEnd:
+        lda     xapLocalUndef
+        bne     _xleUndefined
+
+        lda     xapLocalCount       ; an empty scope costs nothing to leave
+        beq     _xleEmpty
+        jsr     xapLocalClear
+
+        lda     xapDeferred
+        bne     _xleEmpty
+        lda     #<XAP_LOCALHEAP
+        sta     xapLocalTop
+        lda     #>XAP_LOCALHEAP
+        sta     xapLocalTop+1
+
+_xleEmpty:
+        clc
+        rts
+
+_xleUndefined:
+        lda     #XAP_EUNDEF
+        sec
         rts

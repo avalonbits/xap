@@ -26,6 +26,10 @@ out three things on purpose:
   A label called "a", because a lone A is the accumulator to xap and the
   label to 64tass -- a deliberate divergence with its own test.
 
+  Local labels spelled with an at sign, and any name holding a period.
+  64tass takes neither, so only the underscore form of a local is
+  generated; both divergences have their own tests.
+
   Zero page labels, because there are none yet: every label is a code address
   at or above the origin, so a forward reference is absolute either way. When
   assignments arrive this gets more interesting.
@@ -95,7 +99,12 @@ def program(rng, origin=ORIGIN):
         r = rng.random()
         if r < 0.25:
             # A label of its own, or sharing a line with an instruction.
-            name = "l%d" % i
+            # Some are local: an underscore name, which lives only until
+            # the next global one, so two scopes can hold the same name.
+            if rng.random() < 0.35:
+                name = "_s%d" % rng.randrange(4)
+            else:
+                name = "l%d" % i
             if rng.random() < 0.3:
                 text, length = rng.choice(INSTRUCTIONS)
                 items.append(("labelled", text, length, name))
@@ -121,10 +130,25 @@ def program(rng, origin=ORIGIN):
     # Where everything lands, and so where every label is.
     pc = origin
     address = []
-    for kind, text, length, name in items:
+    scope = 0
+    scopes = []             # which scope each item sits in
+    seen = set()            # (scope, name), to catch a repeat definition
+    keep = []
+    for n, (kind, text, length, name) in enumerate(items):
         address.append(pc)
+        if name and not name.startswith("_"):
+            scope += 1      # a global label ends the scope before it
+        scopes.append(scope)
         if name:
-            labels.append((name, pc))
+            if (scope, name) in seen:
+                # The same name twice in one scope is an error in both
+                # assemblers, so do not generate it: drop the definition
+                # and leave the line as an ordinary one.
+                items[n] = ("plain" if kind == "labelled" else "blank",
+                            text, length, None)
+                continue
+            seen.add((scope, name))
+            labels.append((name, pc, scope))
         pc += length
 
     if not labels:
@@ -143,17 +167,24 @@ def program(rng, origin=ORIGIN):
             lines.append("    " + text)
             continue
 
+        # A local is only in view from inside the scope it was defined in.
+        mine = [(nm, at) for nm, at, sc in labels
+                if not nm.startswith("_") or sc == scopes[i]]
+
         if kind == "branch":
             # Only a label the branch can actually reach, measured from the
             # instruction after it.
-            reachable = [nm for nm, at in labels
+            reachable = [nm for nm, at in mine
                          if -128 <= at - (here + length) <= 127]
             if not reachable:
                 lines.append("    nop")
                 continue
             target = rng.choice(reachable)
         elif kind == "absolute":
-            target = rng.choice(labels)[0]
+            if not mine:
+                lines.append("    nop")
+                continue
+            target = rng.choice(mine)[0]
         else:
             target = None
 
