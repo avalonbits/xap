@@ -196,8 +196,12 @@ xapNumber:
         lda     xapHexDigit,x
         cmp     #10
         bcc     _xnDecimal          ; a number has to start with a digit
-        lda     xapLetter,x
-        bne     _xnViaLabel         ; and a name with a letter
+        lda     xapLetter,x         ; and a name with a letter, or with
+        bne     _xnViaLabel         ; either of the two that start a local
+        cpx     #'_'
+        beq     _xnViaLabel
+        cpx     #'@'
+        beq     _xnViaLabel
 
 _xnBad:
         lda     #XAP_EEXPR
@@ -461,20 +465,29 @@ _xiiNo:
 ;   Reads an identifier at the cursor into XAP_LABEL, upper cased, and
 ;   sets xapLabelLen. CC on success, CS with an error in A.
 ;
-;   A name starts with a letter and runs on through letters and digits.
-;   The ROM assembler also allows underscore, at sign and period, and a
-;   leading underscore or at sign makes it local -- neither of those is
-;   here yet.
+;   A name starts with a letter and runs on through letters, digits,
+;   underscore, at sign and period. A leading underscore or at sign makes
+;   it local instead: local names live only between two global labels, and
+;   two scopes can use the same one without meeting.
 ; -----------------------------------------------------------------------
 
 xapReadLabel:
-        ldx     #0
+        stz     xapLocal
         lda     (xapSrc),y
-        stx     xapLabelLen
+        cmp     #'_'            ; either of these starts a local name,
+        beq     _xrlIsLocal         ; which lives only between two global
+        cmp     #'@'                ; labels
+        beq     _xrlIsLocal
+
         tax
         lda     xapLetter,x
-        beq     _xrlBad             ; has to start with a letter
+        beq     _xrlBad             ; otherwise it starts with a letter
+        bra     _xrlStart
 
+_xrlIsLocal:
+        inc     xapLocal
+
+_xrlStart:
         ldx     #0
 _xrlLoop:
         lda     (xapSrc),y
@@ -539,6 +552,17 @@ _xloKnown:
         iny
         lda     (xapSym),y
         sta     xapValue+1
+
+        ; Settled, but not necessarily final. Once a size has been guessed
+        ; anywhere, a guess that turns out wrong shifts the image and moves
+        ; every label above it -- including this one, after its value has
+        ; been written into the code. So it gets a hole like a forward
+        ; reference does; the difference is that the width is chosen from
+        ; the value rather than guessed.
+        lda     xapDeferred
+        beq     _xloDone
+        inc     xapPatch
+_xloDone:
         ldy     xapLabelPos         ; xapSymFind does not touch the cursor,
         clc                         ; but the lookup used Y as an index
         rts

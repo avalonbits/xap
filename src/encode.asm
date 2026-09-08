@@ -189,7 +189,8 @@ _xenViaFail:
 
 _xenRelative:
         lda     xapForward          ; a target nobody has defined yet is
-        bne     _xenRelHole         ; a hole, not an offset
+        ora     xapPatch            ; a hole, and so is one that may still
+        bne     _xenRelHole         ; move
         lda     xapValue            ; for a branch the operand is the
         sta     xapTarget           ; target
         lda     xapValue+1
@@ -208,6 +209,7 @@ _xenBitBranch:
         lda     xapValue            ; the zero page byte, then the branch,
         .put                        ; which is measured from after all
         lda     xapForward          ; three bytes
+        ora     xapPatch
         bne     _xenBitHole
         lda     #3
         jsr     xapOffset
@@ -220,7 +222,8 @@ _xenBitHole:
 
 _xenAdvance:
         lda     xapForward          ; an operand that named a label nobody
-        beq     _xenNoFixup         ; has defined yet leaves a hole here
+        ora     xapPatch            ; has defined yet leaves a hole here,
+        beq     _xenNoFixup         ; and so does one that may still move
 
         lda     xapPC               ; the hole is the byte after the
         clc                         ; opcode, except for a bit branch,

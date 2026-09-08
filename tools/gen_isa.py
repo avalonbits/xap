@@ -449,7 +449,7 @@ def emit(table, out):
     # back zero, which is also how "this ends the name" is said. One load
     # answers both questions, where reading a label used to ask the class
     # table and then call a routine to fold the case, per character.
-    w("; Upper case of a letter or digit, 0 for anything that is neither.\n")
+    w("; Upper case of a character that can appear in a name, 0 otherwise.\n")
     w("xapIdentUpper:\n")
     ident = [0] * 256
     for i in range(26):
@@ -457,12 +457,17 @@ def emit(table, out):
         ident[ord('a') + i] = ord('A') + i
     for i in range(10):
         ident[ord('0') + i] = ord('0') + i
+    # The ROM assembler's manual: a name is an alphabetic character followed
+    # by alphanumerics, underscore, at sign and period. Underscore and at
+    # sign can also start one, and a name that starts with either is local.
+    for c in "_@.":
+        ident[ord(c)] = ord(c)
     w(wrap(ident))
     w("\n")
 
     w("XAP_CLASS_SPACE = $01           ; space or tab\n")
     w("XAP_CLASS_EOL   = $02           ; NUL, newline, or a comment\n")
-    w("XAP_CLASS_IDENT = $04           ; letter or digit\n")
+    w("XAP_CLASS_IDENT = $04           ; anything a name may contain\n")
     w("xapClass:\n")
     klass = [0] * 256
     for c in (ord(' '), 9):
@@ -474,6 +479,8 @@ def emit(table, out):
         klass[ord('a') + i] |= 0x04
     for i in range(10):
         klass[ord('0') + i] |= 0x04
+    for c in "_@.":
+        klass[ord(c)] |= 0x04
     w(wrap(klass))
     w("\n")
 
