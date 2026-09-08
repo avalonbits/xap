@@ -264,6 +264,34 @@ class TestLabels(unittest.TestCase):
             self.xap.assemble("\n".join(first + ["g2:", "    jmp _n17"]) + "\n")
         self.assertEqual(e.exception.code, E_UNDEF)
 
+    def test_more_labels_and_open_references_than_used_to_fit(self):
+        """Six hundred labels, every one referenced before any is defined.
+
+        This is the shape that costs the most of both heaps at once: six
+        hundred symbol records that live to the end of the file, and six
+        hundred fixup records all open at the same time, since not one of
+        them can be retired until the definitions start.
+
+        It did not fit before the object image moved to banked RAM. The
+        symbol heap was 5.5K, which is about 450 labels, and the fixup
+        heap 3.25K, which is 475 open references -- both of them squeezed
+        into what the image left of the flat 64K. Now they are 10K and 6K.
+        """
+        n = 600
+        lines = ["    jmp L%d" % i for i in range(n)]
+        lines += ["L%d: nop" % i for i in reversed(range(n))]
+        source = "\n".join(lines) + "\n"
+
+        got = self.xap.assemble(source, origin=ORIGIN)
+        self.assertEqual(len(got), n * 3 + n)
+
+        # Each jump goes to its own label, and the labels sit in the
+        # reverse of the order they were referenced in.
+        for i in range(n):
+            target = ORIGIN + n * 3 + (n - 1 - i)
+            self.assertEqual(got[i * 3], 0x4C, i)
+            self.assertEqual(got[i * 3 + 1] | (got[i * 3 + 2] << 8), target, i)
+
     def test_a_local_cannot_be_reached_from_another_scope(self):
         for source in ("g1:\n  jmp _a\ng2:\n_a:\n",
                        "g1:\n_a:\ng2:\n  jmp _a\n"):

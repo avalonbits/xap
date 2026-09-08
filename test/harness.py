@@ -16,9 +16,9 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 BINARY = os.path.join(ROOT, "build", "xap.bin")
 
 # xap's own working memory is fixed by src/xap.asm and cannot be moved from
-# here: the source window at $2000, the symbol table and fixups from $3100.
-# So the text being assembled goes above xap's code, where nothing else
-# claims anything.
+# here: the source window at $0800, the hash tables and heaps from $1900 up
+# to the code at $6000. So the text being assembled goes above xap's code,
+# where nothing else claims anything.
 #
 # It used to sit at $3000, which the symbol table grew over as soon as labels
 # arrived -- the assembler read its own hash buckets as source and the tests

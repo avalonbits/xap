@@ -40,7 +40,7 @@
 ;   its end for the terminator that marks the end of the window.
 ; -----------------------------------------------------------------------
 
-XAP_BUFFER      = $2000
+XAP_BUFFER      = $0800
 XAP_BUFFER_SIZE = $1000             ; source window, 4K
 XAP_BUFFER_END  = XAP_BUFFER + XAP_BUFFER_SIZE
 
@@ -55,31 +55,13 @@ XAP_LABEL_MAX   = 31
 ; byte arrays rather than as one array of pairs. That way the bucket
 ; number is the index into both, so a lookup is two absolute indexed
 ; loads: nothing to double, and no sixteen-bit pointer to build first.
-XAP_SYMHASH     = $3100
+XAP_SYMHASH     = $1900
 XAP_SYMHASH_LO  = XAP_SYMHASH
 XAP_SYMHASH_HI  = XAP_SYMHASH + 256
-XAP_FIXHEAP     = $3300
-XAP_FIXHEAP_END = $4000             ; 3.25K, or 665 forward references
-
-; The symbol heap goes below everything else because it is the part that
-; wants the most room: eight bytes and a name each. A ROM-resident xap
-; would put all of this in banked RAM, where there is as much as anyone
-; needs; this flat map is what the tests run against.
-XAP_SYMHEAP     = $0800
-XAP_SYMHEAP_END = $1E00             ; 5.5K, or about 450 labels
 
 ; Local labels live apart and the whole lot is thrown away at every global
-; label, so this only has to hold one scope at a time. Real source has
-; about six tenths of a local per global scope; 384 bytes is around thirty
-; at once, which is a long routine's worth.
-;
-; Everything here is squeezed because the flat map is full: 6K of source
-; and object buffers, 3.25K of fixups and 8K of image leave this much and
-; no more. A ROM-resident xap puts the lot in banked RAM and none of
-; these numbers survive.
-XAP_LOCALHEAP     = $1E00
-XAP_LOCALHEAP_END = $1F80
-XAP_LOCALHASH     = $1F80           ; 32 buckets, split as above
+; label, so this only has to hold one scope at a time.
+XAP_LOCALHASH     = $1B00           ; 32 buckets, split as above
 XAP_LOCALHASH_LO  = XAP_LOCALHASH
 XAP_LOCALHASH_HI  = XAP_LOCALHASH + 32
 XAP_LOCALMASK     = 31
@@ -88,10 +70,34 @@ XAP_LOCALMASK     = 31
 ; appended as the records are made. Emptying the table at a scope
 ; boundary then costs two stores a local rather than sixty-four -- and a
 ; scope holds a handful of locals where the table holds thirty-two
-; buckets. Bounded by the local heap: the shortest record a name can make
-; is nine bytes, so 384 bytes of heap cannot hold more than 42 of them.
-XAP_LOCALUSED     = $1FC0
-XAP_LOCALUSED_END = $2000
+; buckets. As long as the local heap can make records, which the .cerror
+; in symbol.asm insists on.
+XAP_LOCALUSED     = $1B40
+XAP_LOCALUSED_END = $1C00
+
+XAP_LOCALHEAP     = $1C00
+XAP_LOCALHEAP_END = $2000           ; 1K, about a hundred in a scope
+
+; -----------------------------------------------------------------------
+;   The two heaps, which are what actually limits the size of a program
+;   xap can assemble now that the image has gone to banked RAM.
+;
+;   These are the numbers the image used to squeeze. It took 23.5K of the
+;   flat 64K, then 8K, and everything else was fitted around whichever it
+;   was: 5.5K of symbol heap, about 450 labels, on a machine whose own
+;   KERNAL source has thousands.
+;
+;   A fixup record is seven bytes and lives only until the label it waits
+;   on is defined, so what this has to hold is the most forward references
+;   open at once, not the number in the file. A symbol record is eight
+;   bytes and a name, and lives to the end.
+; -----------------------------------------------------------------------
+
+XAP_FIXHEAP     = $2000
+XAP_FIXHEAP_END = $3800             ; 6K, or 877 open forward references
+
+XAP_SYMHEAP     = $3800
+XAP_SYMHEAP_END = $6000             ; 10K, or about 700 labels
 
 ; The object image, in banked RAM.
 ;
@@ -575,3 +581,14 @@ xapSkipSpace:
 ; -----------------------------------------------------------------------
 
         .cerror * > $9F00, "xap has run into the I/O page at $9F00"
+
+; The other end of the same question: the buffers and heaps below the code
+; must stop before it starts. They are laid out by hand, so nothing else
+; would notice if two of them overlapped or the last ran on into CODEADDR.
+        .cerror XAP_SYMHEAP_END > CODEADDR, "the heaps have run into the code"
+        .cerror XAP_BUFFER_END + 1 + XAP_LABEL_MAX > XAP_SYMHASH, "the label buffer overlaps the hash table"
+        .cerror XAP_SYMHASH_HI + 256 > XAP_LOCALHASH, "the hash tables overlap"
+        .cerror XAP_LOCALHASH_HI + 32 > XAP_LOCALUSED, "the local tables overlap"
+        .cerror XAP_LOCALUSED_END > XAP_LOCALHEAP, "the local heap overlaps its bucket list"
+        .cerror XAP_LOCALHEAP_END > XAP_FIXHEAP, "the fixup heap overlaps the local heap"
+        .cerror XAP_FIXHEAP_END > XAP_SYMHEAP, "the symbol heap overlaps the fixup heap"

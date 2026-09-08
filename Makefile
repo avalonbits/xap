@@ -92,9 +92,10 @@ $(BUILDDIR)/bench.bin: $(SOURCES) $(TESTDIR)/bench.asm | $(BUILDDIR) need-tass
 # Two corpora. isa_even weights all 212 opcodes alike, so nothing can hide;
 # isa_real follows corpus/real.json, counted from real code by scan_isa.py, so
 # the number means something about how xap will feel.
-# How many labels the degenerate corpus uses. Bounded by the symbol heap,
-# which the local label tables took a slice of.
-DEGENERATE_LABELS ?= 400
+# How many labels the degenerate corpus uses. Every one of them is referenced
+# before any is defined, so this is also how many fixup records are open at
+# once -- which is the number the fixup heap is really sized against.
+DEGENERATE_LABELS ?= 600
 
 CORPORA = $(BUILDDIR)/isa_even.asm $(BUILDDIR)/isa_real.asm \
 	  $(BUILDDIR)/isa_jump_degenerate.asm
