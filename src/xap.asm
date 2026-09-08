@@ -211,10 +211,14 @@ XAP_ELABEL    = $25         ; label name missing or too long
 ;   index register.
 ; -----------------------------------------------------------------------
 
+; Reads through xapIdentUpper rather than the class table, because that
+; one is zero for exactly the characters a name cannot contain -- it has
+; to be, since xapReadLabel uses the zero to find the end of a name. So
+; the class bit needs no masking off, which is two cycles and two bytes
+; at each of the three places this sits.
 isident .macro
         tax
-        lda     xapClass,x
-        and     #XAP_CLASS_IDENT
+        lda     xapIdentUpper,x
         .endm
 
 atend .macro

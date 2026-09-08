@@ -445,23 +445,6 @@ _xuDone:
         rts
 
 ; -----------------------------------------------------------------------
-;   CS when A could continue an identifier: a letter or a digit.
-;
-;   Two nested calls became one indexed load.
-; -----------------------------------------------------------------------
-
-xapIsIdent:
-        tax
-        lda     xapClass,x
-        and     #XAP_CLASS_IDENT
-        beq     _xiiNo
-        sec
-        rts
-_xiiNo:
-        clc
-        rts
-
-; -----------------------------------------------------------------------
 ;   Reads an identifier at the cursor into XAP_LABEL, upper cased, and
 ;   sets xapLabelLen. CC on success, CS with an error in A.
 ;

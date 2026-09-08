@@ -77,6 +77,56 @@ class TestISA(unittest.TestCase):
             else:
                 self.fail("no probe reached mode %s" % name)
 
+    def test_the_ident_table_agrees_with_the_class_table(self):
+        """The .isident macro reads xapIdentUpper and takes zero to mean
+        "not part of a name", instead of reading the class table and
+        masking off XAP_CLASS_IDENT.
+
+        That is only correct while the two describe the same set of
+        characters, and they are generated independently -- one to fold
+        case while a name is read, the other to classify a character for
+        the line parser. So the equivalence is asserted rather than
+        assumed, over all 256 values.
+        """
+        tables = self.tables()
+        ident = tables["xapIdentUpper"]
+        klass = tables["xapClass"]
+        self.assertEqual(len(ident), 256)
+        self.assertEqual(len(klass), 256)
+        for b in range(256):
+            self.assertEqual(bool(ident[b]), bool(klass[b] & 0x04),
+                             "$%02X: xapIdentUpper says %d, xapClass says %d"
+                             % (b, ident[b], klass[b]))
+
+    @staticmethod
+    def tables():
+        """The byte tables in src/isa.inc, by label."""
+        import re
+
+        out = {}
+        name = None
+        with open(ISA) as fh:
+            for line in fh:
+                label = re.match(r"^(\w+):", line)
+                if label:
+                    name = label.group(1)
+                    out[name] = []
+                    continue
+                body = re.match(r"\s+\.byte\s+(.*)", line)
+                if body and name:
+                    values = [v.strip() for v in body.group(1).split(",")]
+                    if all(re.fullmatch(r"\$[0-9a-f]{2}", v) for v in values):
+                        out[name] += [int(v[1:], 16) for v in values]
+                    else:
+                        # A table of expressions rather than bytes, such as
+                        # the opcode row addresses. Not one of these.
+                        out.pop(name, None)
+                        name = None
+                elif not line.strip():
+                    name = None
+
+        return out
+
     def test_bit_families_stay_arithmetic(self):
         """RMB3 is RMB0 plus 3*16, and the table depends on that."""
         tass = g.Tass(TASS)
