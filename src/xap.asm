@@ -50,7 +50,14 @@ XAP_LABEL       = XAP_BUFFER_END + 1
 XAP_LABEL_MAX   = 31
 
 ; One bucket head per byte of hash, so the hash needs no masking.
+;
+; A bucket head is an address, but the two halves are held as parallel
+; byte arrays rather than as one array of pairs. That way the bucket
+; number is the index into both, so a lookup is two absolute indexed
+; loads: nothing to double, and no sixteen-bit pointer to build first.
 XAP_SYMHASH     = $3100
+XAP_SYMHASH_LO  = XAP_SYMHASH
+XAP_SYMHASH_HI  = XAP_SYMHASH + 256
 XAP_FIXHEAP     = $3300
 XAP_FIXHEAP_END = $4000             ; 3.25K, or 665 forward references
 
@@ -72,8 +79,19 @@ XAP_SYMHEAP_END = $1E00             ; 5.5K, or about 450 labels
 ; these numbers survive.
 XAP_LOCALHEAP     = $1E00
 XAP_LOCALHEAP_END = $1F80
-XAP_LOCALHASH     = $1F80           ; 32 buckets of two bytes
+XAP_LOCALHASH     = $1F80           ; 32 buckets, split as above
+XAP_LOCALHASH_LO  = XAP_LOCALHASH
+XAP_LOCALHASH_HI  = XAP_LOCALHASH + 32
 XAP_LOCALMASK     = 31
+
+; Which buckets this scope has actually put something in, one byte each,
+; appended as the records are made. Emptying the table at a scope
+; boundary then costs two stores a local rather than sixty-four -- and a
+; scope holds a handful of locals where the table holds thirty-two
+; buckets. Bounded by the local heap: the shortest record a name can make
+; is nine bytes, so 384 bytes of heap cannot hold more than 42 of them.
+XAP_LOCALUSED     = $1FC0
+XAP_LOCALUSED_END = $2000
 
 ; The object image. Fixups write back into code already emitted, which a
 ; file that has been flushed cannot do -- so the object is built in
@@ -144,7 +162,8 @@ xapLocalTop   = XAP_ZP+78           ; next free byte of the local heap
 xapLocalCount = XAP_ZP+80           ; locals in this scope, so an empty one
                                     ; costs nothing to leave
 xapLocalUndef = XAP_ZP+81           ; and how many are still not defined
-xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in
+xapBucket     = XAP_ZP+82           ; the hash bucket a lookup landed in,
+                                    ; as an index into whichever table
 xapWalkEnd    = XAP_ZP+84           ; where a walk over a heap stops
 xapPatch      = XAP_ZP+86           ; the value is known but may still move
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
@@ -192,10 +211,14 @@ XAP_ELABEL    = $25         ; label name missing or too long
 ;   index register.
 ; -----------------------------------------------------------------------
 
+; Reads through xapIdentUpper rather than the class table, because that
+; one is zero for exactly the characters a name cannot contain -- it has
+; to be, since xapReadLabel uses the zero to find the end of a name. So
+; the class bit needs no masking off, which is two cycles and two bytes
+; at each of the three places this sits.
 isident .macro
         tax
-        lda     xapClass,x
-        and     #XAP_CLASS_IDENT
+        lda     xapIdentUpper,x
         .endm
 
 atend .macro
@@ -211,7 +234,9 @@ atend .macro
 ;   Most calls have nothing to skip -- there is one run of indentation a
 ;   line and the rest of the calls sit between tokens that are usually
 ;   already touching. So the first character is tested inline and the
-;   loop is only entered when there is really a space there.
+;   loop is only entered when there is really a space there, which also
+;   means the loop can start by stepping over that character rather than
+;   reading it a second time.
 ; -----------------------------------------------------------------------
 
 skipspace .macro
@@ -504,18 +529,21 @@ _xelExit:
 
 ; -----------------------------------------------------------------------
 ;   Steps the cursor over spaces and tabs.
+;
+;   Entered only from the .skipspace macro, which has already looked at
+;   the character under the cursor and found it to be one of the two. So
+;   the first thing to do is step past it, and the loop never re-reads a
+;   character the caller has already classified -- which takes three
+;   cycles off every space in a run of indentation.
 ; -----------------------------------------------------------------------
 
 xapSkipSpace:
+        iny
         lda     (xapSrc),y
         cmp     #' '
-        beq     _xssNext
+        beq     xapSkipSpace
         cmp     #9
-        bne     _xssDone
-_xssNext:
-        iny
-        bra     xapSkipSpace
-_xssDone:
+        beq     xapSkipSpace
         rts
 
         .include "symbol.asm"

@@ -166,6 +166,36 @@ class TestEncoding(unittest.TestCase):
         self.assertEqual(self.xap.assemble("bcc $0F82", origin=0x1000),
                          bytes([0x90, 0x80]))
 
+    def test_a_branch_target_comes_from_its_own_line(self):
+        """Never from a value left over by the line before it.
+
+        The operand parser does not clear the branch target: both kinds of
+        branch write it from their own operand before anything reads it,
+        so clearing it would be six cycles a line spent on a value that is
+        either about to be overwritten or never looked at. These pin that.
+        A leftover target shows up as a displacement measured from the
+        previous line's operand rather than from the program counter.
+        """
+        # A large operand, then a branch that must ignore it.
+        self.assertEqual(
+            self.xap.assemble("lda $1234\nbcc $1005\n", origin=0x1000),
+            bytes([0xAD, 0x34, 0x12, 0x90, 0x00]))
+
+        # A branch, then a bit branch: the second must not inherit the
+        # first's target, and vice versa.
+        self.assertEqual(
+            self.xap.assemble("bcc $1002\nbbr0 $34,$1005\n", origin=0x1000),
+            bytes([0x90, 0x00, 0x0F, 0x34, 0x00]))
+        self.assertEqual(
+            self.xap.assemble("bbr0 $34,$1003\nbcc $1005\n", origin=0x1000),
+            bytes([0x0F, 0x34, 0x00, 0x90, 0x00]))
+
+        # And a bit branch after an ordinary instruction with an operand
+        # that would reach, if it were wrongly taken as the target.
+        self.assertEqual(
+            self.xap.assemble("lda $1010\nbbr0 $34,$1006\n", origin=0x1000),
+            bytes([0xAD, 0x10, 0x10, 0x0F, 0x34, 0x00]))
+
     def test_a_branch_out_of_reach_is_an_error(self):
         for target in (0x1082, 0x0F81):
             with self.assertRaises(Error, msg=hex(target)) as e:
@@ -207,6 +237,31 @@ class TestEncoding(unittest.TestCase):
             bytes([0xEA, 0xEA]))
         self.assertEqual(self.xap.assemble("nop\r\nnop\r\n"),
                          bytes([0xEA, 0xEA]))
+
+    def test_runs_of_spaces_and_tabs_between_every_token(self):
+        """Every place the scanner skips whitespace, given more than one.
+
+        The skipper is entered only once the character under the cursor has
+        already been classified as a space or a tab, so it steps past that
+        one before looking again. An off-by-one there eats a character of
+        the token that follows, or leaves the cursor on the last space --
+        neither of which a single separator can show.
+        """
+        for source, want in (
+            ("        nop", [0xEA]),
+            ("\t\t\t\tnop", [0xEA]),
+            (" \t \t nop", [0xEA]),
+            ("lda    \t  #$12", [0xA9, 0x12]),
+            ("lda   $34  ,   x", [0xB5, 0x34]),
+            ("lda   (  $34  ,  x  )", [0xA1, 0x34]),
+            ("lda   (  $34  )  ,  y", [0xB1, 0x34]),
+            ("lda   (  $34  )", [0xB2, 0x34]),
+            ("bbr0   $34  ,  $1003", [0x0F, 0x34, 0x00]),
+            ("nop   \t   ; a comment", [0xEA]),
+            ("   \t   \n   \t   nop", [0xEA]),
+        ):
+            self.assertEqual(self.xap.assemble(source, origin=0x1000),
+                             bytes(want), repr(source))
 
     def test_comments(self):
         """A semicolon ends the line, wherever it is and whatever follows."""

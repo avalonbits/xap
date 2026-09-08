@@ -11,15 +11,20 @@
 ; ***********************************************************************
 
 ; -----------------------------------------------------------------------
-;   Reads the operand at the cursor into xapValue, xapTarget and xapMode.
-;   CC on success, CS with an error in A.
+;   Reads the operand at the cursor into xapValue and xapMode. CC on
+;   success, CS with an error in A.
+;
+;   xapTarget is not cleared here, and must not come to depend on being.
+;   Only a branch has a target, and both kinds write it from this line's
+;   own operand before anything reads it: the bit branch below, and
+;   xapEncode for an ordinary one, which copies xapValue into it. So
+;   zeroing it every instruction was six cycles spent on a value that is
+;   either about to be overwritten or never looked at.
 ; -----------------------------------------------------------------------
 
 xapOperand:
         stz     xapValue
         stz     xapValue+1
-        stz     xapTarget
-        stz     xapTarget+1
 
         ; Cleared here as well as in xapNumber, because an instruction
         ; with no operand never reaches xapNumber -- and a NOP after a

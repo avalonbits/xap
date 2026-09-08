@@ -92,6 +92,7 @@ def main():
 
     source = corpus(LINES)
     size = len(source)
+    lines = source.count("\n")
 
     # One object byte per two or three of source, so this is generous; the
     # point is that it fails loudly rather than quietly assembling nonsense.
@@ -135,7 +136,7 @@ def main():
 
     print("xap hotspots")
     print("  %d lines, %d bytes, %d cycles, %.1f cycles/byte\n"
-          % (LINES, size, total, total / size))
+          % (lines, size, total, total / size))
     print("  %-22s %10s %8s %7s %10s %8s"
           % ("routine", "cycles", "cyc/byte", "share", "entries", "cyc/entry"))
     print("  " + "-" * 71)
@@ -149,8 +150,11 @@ def main():
     print("  " + "-" * 71)
     print("  %-22s %10d %8.1f %6.1f%%"
           % ("total", total, total / size, 100.0))
-    print("\n  %.1f cycles a line over %d lines"
-          % (total / LINES, LINES))
+    # Cycles a line as well as a byte, because the two move differently:
+    # changing the corpus's indentation moves the byte count without moving
+    # the work, and a tab-indented corpus read 113 cycles a byte against 91
+    # for a four-space one while the absolute cycles barely shifted.
+    print("\n  %.1f cycles a line over %d lines" % (total / lines, lines))
 
 
 if __name__ == "__main__":
