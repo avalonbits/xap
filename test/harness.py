@@ -16,27 +16,81 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 BINARY = os.path.join(ROOT, "build", "xap.bin")
 
 # xap's own working memory is fixed by src/xap.asm and cannot be moved from
-# here: the source window at $2000, the symbol table and fixups from $3100,
-# and the object image from $4000. So the text being assembled goes above
-# xap's code, where nothing else claims anything.
+# here: the source window at $0800, the hash tables and heaps from $1900 up
+# to the code at $6000. So the text being assembled goes above xap's code,
+# where nothing else claims anything.
 #
 # It used to sit at $3000, which the symbol table grew over as soon as labels
 # arrived -- the assembler read its own hash buckets as source and the tests
 # that noticed looked like assembler bugs.
 CODE = 0x6000        # where xap.bin is assembled to run, per the Makefile
-OUTPUT = 0x4000      # the object image, as src/xap.asm places it
-RETURN = 0xBF00      # above the code, below the source
+RETURN = 0x0300      # below everything xap claims, and out of the window
 SOURCE = 0xC000      # the text being assembled
+
+# The object image is not in the flat 64K at all any more. It lives in banked
+# RAM, which the X16 shows 8K at a time through a window at $A000 with the
+# bank chosen by the byte at $00 -- so the harness has to model that much of
+# the machine or it is testing something the machine does not do.
+WINDOW = 0xA000
+WINDOW_END = 0xC000
+WINDOW_SIZE = WINDOW_END - WINDOW
+RAMBANK = 0x00
+IMAGE_BANK = 1       # bank 0 belongs to the KERNAL
+IMAGE_BANKS = 8      # 64K, all a 65C02 program can be
 
 # Zero page, mirroring src/xap.asm.
 ZP = 0x22
 SRC = ZP + 0
-OUT = ZP + 2
 PC = ZP + 4
+ORIGIN = ZP + 60
 
 # A line of xap has no loops over anything unbounded, so a run that gets this
 # far is stuck rather than slow.
 STEP_LIMIT = 2000000
+
+
+class BankedMemory:
+    """Flat 64K, except the window at $A000, which shows one bank of many.
+
+    py65 has no banking, and it does not need any in general -- so rather
+    than an ObservableMemory with a callback on every address, which puts a
+    dictionary lookup in front of every read the processor makes, this is one
+    range check. That matters: the hotspot profiler steps about a million
+    instructions and every one of them reads memory.
+    """
+
+    def __init__(self, banks=IMAGE_BANK + IMAGE_BANKS + 1):
+        self.flat = bytearray(0x10000)
+        self.banks = [bytearray(WINDOW_SIZE) for _ in range(banks)]
+
+    def __getitem__(self, a):
+        if isinstance(a, slice):
+            return [self[i] for i in range(*a.indices(0x10000))]
+        if WINDOW <= a < WINDOW_END:
+            return self.banks[self.flat[RAMBANK]][a - WINDOW]
+
+        return self.flat[a]
+
+    def __setitem__(self, a, v):
+        if isinstance(a, slice):
+            for i, value in zip(range(*a.indices(0x10000)), v):
+                self[i] = value
+            return
+        if WINDOW <= a < WINDOW_END:
+            self.banks[self.flat[RAMBANK]][a - WINDOW] = v
+        else:
+            self.flat[a] = v
+
+    def __len__(self):
+        return 0x10000
+
+    def image(self, size):
+        """The first size bytes of the object image, across banks."""
+        out = bytearray()
+        for i in range(size):
+            out.append(self.banks[IMAGE_BANK + (i >> 13)][i & 0x1FFF])
+
+        return bytes(out)
 
 
 class Error(Exception):
@@ -58,7 +112,7 @@ class Xap:
         Raises Error with the code xap reported, so a test can assert on the
         failure as precisely as on the output.
         """
-        mpu = MPU()
+        mpu = MPU(memory=BankedMemory())
         for i, b in enumerate(self.code):
             mpu.memory[CODE + i] = b
 
@@ -70,7 +124,6 @@ class Xap:
             mpu.memory[SOURCE + i] = b
 
         self._poke16(mpu, SRC, SOURCE)
-        self._poke16(mpu, OUT, OUTPUT)
         self._poke16(mpu, PC, origin)
 
         # RTS returns to the address after the one on the stack, so what goes
@@ -94,9 +147,11 @@ class Xap:
         if mpu.p & 0x01:                       # carry set: failed
             raise Error(mpu.a)
 
-        end = self._peek16(mpu, OUT)
+        # The image and the program counter advance together, so how far the
+        # counter has come is how much object code there is.
+        size = self._peek16(mpu, PC) - self._peek16(mpu, ORIGIN)
 
-        return bytes(mpu.memory[OUTPUT:end])
+        return mpu.memory.image(size)
 
     @staticmethod
     def _poke16(mpu, addr, value):

@@ -187,6 +187,75 @@ class TestOnHardware(unittest.TestCase):
         got, _ = self.assemble(source)
         self.assertEqual(got, self.tass(source))
 
+    # ---- the image is banked -------------------------------------------
+    #
+    # The object goes into banked RAM, eight 8K banks seen through one
+    # window at $A000. Everything above the addressing layer treats it as a
+    # flat run of bytes, so the only places the seam shows are where a byte
+    # lands either side of it -- and those are the cases here. They need the
+    # real machine, because the seam is the machine.
+
+    def test_an_object_larger_than_one_bank(self):
+        """Straightforward, but it has to cross."""
+        source = a_program(["    lda $1234"] * 3000)      # 9000 bytes
+        got, _ = self.assemble(source)
+        self.assertEqual(len(got), 9000)
+        self.assertEqual(got, self.tass(source))
+
+    def test_an_absolute_fixup_that_straddles_a_bank_boundary(self):
+        """The two bytes of an address, either side of the seam.
+
+        A fixup is filled in through the window, and the window shows one
+        bank. So an absolute operand whose low byte is the last byte of a
+        bank has its high byte in the next one, and the resolver has to go
+        and find it rather than adding one to the address it already has.
+
+        Once in 8192, which is exactly why it is placed rather than hoped
+        for: the JMP is put so that its opcode is the last byte but two of
+        the first bank.
+        """
+        # Three bytes a line, up to the byte before the boundary.
+        pad = (0x2000 - 2) // 3
+        self.assertEqual(pad * 3, 0x2000 - 2, "the padding has to land exactly")
+
+        lines = ["    lda $1234"] * pad     # to offset $1FFE
+        lines += ["    jmp fwd"]            # opcode $1FFE, low $1FFF, high $2000
+        lines += ["    nop", "fwd:", "    nop"]
+        source = a_program(lines)
+
+        got, _ = self.assemble(source)
+        want = self.tass(source)
+        self.assertEqual(got, want)
+
+        # And say plainly what was being tested, so a pass means what it
+        # looks like: the JMP really is astride the boundary.
+        self.assertEqual(got[0x1FFE], 0x4C)
+        self.assertEqual(got[0x1FFF] | (got[0x2000] << 8), ORIGIN + 0x2002)
+
+    def test_a_widening_that_shifts_across_a_bank_boundary(self):
+        """The expensive case, made to cross the seam.
+
+        A forward reference inside the zero page is emitted narrow on the
+        chance it fits. When it turns out not to, the image shifts up a
+        byte from the hole to the top -- and with more than 8K above the
+        hole that walk runs off the bottom of one bank into the top of the
+        one below, in both directions at once, since it reads at one
+        address and writes at the next.
+        """
+        lines = ["    lda fwd"]             # guessed narrow: origin is zero
+        lines += ["    lda $1234"] * 3000   # 9000 bytes above the hole
+        lines += ["fwd:", "    nop"]
+        source = a_program(lines)
+
+        got, _ = self.assemble(source, origin=0)
+        want = self.tass(source, origin=0)
+        self.assertEqual(got, want)
+
+        # It really did widen: three bytes, not two, and the target is
+        # where the label ended up.
+        self.assertEqual(got[0], 0xAD)
+        self.assertEqual(got[1] | (got[2] << 8), 9003)
+
     def test_the_last_line_need_not_be_terminated(self):
         got, _ = self.assemble("nop\nlda #$12")
         self.assertEqual(got, bytes([0xEA, 0xA9, 0x12]))

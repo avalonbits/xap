@@ -99,10 +99,11 @@ LOCAL_DEFINITION_RATE = 0.028
 # once in the same range that real source produces.
 LABEL_REACH = 1024
 
-# What the object image holds in the flat test memory map, $4000 to $6000.
-# A corpus that assembles to more than this cannot be assembled at all, and
-# saying so here is better than an out-of-memory error from the far end.
-IMAGE_LIMIT = 0x6000 - 0x4000
+# The image is eight banks of 8K, which is the whole address space, so what
+# actually binds is the program counter: the corpus is assembled at $1000 and
+# an object that ran past $FFFF would wrap it. Saying so here is better than
+# an out-of-memory error from the far end.
+IMAGE_LIMIT = 0x10000 - 0x1000
 
 # Comment text for isa_real. What matters is the length, since a comment is
 # scanned character by character and never parsed, but real-looking text keeps
