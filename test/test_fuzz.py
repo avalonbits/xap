@@ -30,9 +30,9 @@ out three things on purpose:
   64tass takes neither, so only the underscore form of a local is
   generated; both divergences have their own tests.
 
-  Zero page labels, because there are none yet: every label is a code address
-  at or above the origin, so a forward reference is absolute either way. When
-  assignments arrive this gets more interesting.
+  A constant used before it is assigned, which xap refuses and 64tass takes
+  in a later pass. That divergence has its own test; here every constant is
+  assigned at the top, before anything can refer to it.
 
   Branches out of reach, which are an error rather than a difference.
 """
@@ -83,6 +83,40 @@ def to_tass(source):
                   flags=re.I)
 
 
+# Constants, assigned before anything can use them. Their values straddle the
+# zero page boundary on purpose: a constant is used by value, so which side it
+# falls determines the width of the instruction that names it, and getting
+# that wrong is the whole risk of introducing them.
+CONSTANTS = [("k%d" % i) for i in range(6)]
+
+
+def constant_block(rng):
+    """The assignments, and what each name is worth."""
+    values = {}
+    lines = []
+    for name in CONSTANTS:
+        if rng.random() < 0.5:
+            v = rng.randrange(0x100)          # zero page
+        else:
+            v = rng.randrange(0x100, 0x10000)
+        values[name] = v
+        how = rng.randrange(3)
+        if how == 0:
+            lines.append("%s = $%x" % (name, v))
+        elif how == 1:
+            lines.append("%s = %d" % (name, v))
+        else:
+            lines.append("%s=$%04x" % (name, v))
+
+    return lines, values
+
+
+# Instructions whose operand can be a constant. Every one of these has both a
+# zero page and an absolute form, so the width really does follow the value.
+CONSTANT_OPERAND = ["lda {K}", "sta {K}", "cmp {K}", "adc {K}",
+                    "lda {K},x", "sta {K},x", "ldx {K},y"]
+
+
 def program(rng, origin=ORIGIN):
     """A random program, and the labels it defines.
 
@@ -92,8 +126,12 @@ def program(rng, origin=ORIGIN):
     the second fills in which label each reference names.
     """
     n = rng.randint(4, 60)
-    items = []          # (kind, template, length, label defined here)
+    items = []          # (kind, text, length, label defined here)
     labels = []         # (name, address)
+
+    # Assigned first, so nothing can refer to one before it is made. They
+    # emit no bytes, so they do not move any address.
+    assignments, constants = constant_block(rng)
 
     for i in range(n):
         r = rng.random()
@@ -119,6 +157,14 @@ def program(rng, origin=ORIGIN):
         elif r < 0.65:
             text, length = rng.choice(BIT_BRANCH)
             items.append(("branch", text, length, None))
+        elif r < 0.68:
+            # A constant, named rather than written out. Its width follows
+            # its value, so the name is chosen here and the length comes
+            # from what it was assigned -- which is the thing being tested.
+            name = rng.choice(CONSTANTS)
+            text = rng.choice(CONSTANT_OPERAND).format(K=name)
+            length = 2 if constants[name] < 0x100 else 3
+            items.append(("plain", text, length, None))
         elif r < 0.72:
             items.append(("blank", "", 0, None))
         elif r < 0.80:
@@ -195,7 +241,7 @@ def program(rng, origin=ORIGIN):
         else:
             lines.append("    " + body)
 
-    return "\n".join(lines) + "\n", labels
+    return "\n".join(assignments + lines) + "\n", labels
 
 
 class TestFuzz(unittest.TestCase):

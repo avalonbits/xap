@@ -186,6 +186,8 @@ xapWalkEnd    = XAP_ZP+84           ; where a walk over a heap stops
 xapPatch      = XAP_ZP+86           ; the value is known but may still move
 xapOutBank    = XAP_ZP+87           ; the bank xapOut is pointing into
 xapFillBank   = XAP_ZP+88           ; and the bank a walk over the image is in
+xapDefFlags   = XAP_ZP+89           ; what a definition sets: a label is an
+                                    ; address, an assignment is only a value
 xapDeferred   = XAP_ZP+74           ; a size was guessed, so nothing is filled
                                     ; in until the whole file has been read
 
@@ -212,6 +214,7 @@ XAP_EVALUE    = $22         ; value does not fit the only mode available
 XAP_EUNDEF    = $23         ; a label was used and never defined
 XAP_EREDEF    = $24         ; a label was defined twice
 XAP_ELABEL    = $25         ; label name missing or too long
+XAP_EFORWARD  = $26         ; an assignment was used before it was made
 
 ; -----------------------------------------------------------------------
 ;   Z clear when the character in A ends the line: the end of the window,

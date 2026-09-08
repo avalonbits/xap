@@ -423,3 +423,158 @@ class TestLabels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAssignments(unittest.TestCase):
+    """"name = value": a number that has a name, rather than a place.
+
+    Checked against 64tass wherever the two agree, which is everywhere
+    except the one case a single pass cannot do and this one refuses --
+    see the divergence test at the bottom.
+    """
+
+    xap = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.xap = Xap()
+
+    def same(self, source, origin=ORIGIN):
+        """xap and 64tass agree, byte for byte."""
+        got = self.xap.assemble(source, origin=origin)
+        want = TestLabels.tass(self, source, origin)
+        self.assertEqual(got, want, source)
+
+        return got
+
+    def test_a_constant_is_used_by_value(self):
+        """And so picks its own width, the way a literal would."""
+        self.assertEqual(self.same("foo = $12\n lda foo\n"),
+                         bytes([0xA5, 0x12]))
+        self.assertEqual(self.same("foo = $1234\n lda foo\n"),
+                         bytes([0xAD, 0x34, 0x12]))
+
+    def test_every_way_of_writing_the_value(self):
+        for source, want in (
+            ("foo = $12\n lda #foo\n", [0xA9, 0x12]),
+            ("foo = 25\n lda #foo\n", [0xA9, 0x19]),
+            ("foo = %00011111\n lda #foo\n", [0xA9, 0x1F]),
+            ("foo = 'A'\n lda #foo\n", [0xA9, 0x41]),
+        ):
+            self.assertEqual(self.same(source), bytes(want), source)
+
+    def test_spacing_and_comments(self):
+        for source in ("foo=$12\n lda foo\n",
+                       "foo   =   $12\n lda foo\n",
+                       "foo\t=\t$12\n lda foo\n",
+                       "foo = $12 ; a comment\n lda foo\n"):
+            self.assertEqual(self.same(source), bytes([0xA5, 0x12]), source)
+
+    def test_the_name_is_folded_like_any_other(self):
+        self.assertEqual(self.same("FOO = $12\n lda foo\n"),
+                         bytes([0xA5, 0x12]))
+
+    def test_a_constant_may_be_local(self):
+        """It lives between two global labels, as a local label does."""
+        self.assertEqual(self.same("g1:\n_k = $12\n lda _k\n"),
+                         bytes([0xA5, 0x12]))
+
+    def test_a_local_constant_does_not_escape_its_scope(self):
+        with self.assertRaises(Error) as e:
+            self.xap.assemble("g1:\n_k = $12\ng2:\n lda _k\n")
+        self.assertEqual(e.exception.code, E_UNDEF)
+
+    def test_an_assignment_does_not_end_the_local_scope(self):
+        """A table of constants in the middle of a routine should not
+        throw away the routine's local labels. 64tass has the same rule,
+        which is what makes this checkable against it."""
+        self.assertEqual(self.same("g1:\n_a: nop\nk = $12\n jmp _a\n"),
+                         bytes([0xEA, 0x4C, 0x00, 0x10]))
+
+    def test_a_constant_does_not_move_when_the_image_shifts(self):
+        """A widening moves every label above it. A constant is not a
+        place, so it stays exactly where it was put -- which is what the
+        address flag has always been for.
+
+        At a zero page origin "lda fwd" is guessed narrow and widened
+        when fwd turns out not to fit, shifting everything above. The
+        constant is used on both sides of that.
+        """
+        source = ("k = $34\n"
+                  " lda k\n"
+                  " lda fwd\n"
+                  " lda k\n"
+                  "fwd: nop\n")
+        got = self.same(source, origin=0)
+        self.assertEqual(got[0:2], bytes([0xA5, 0x34]))     # before
+        self.assertEqual(got[-3:-1], bytes([0xA5, 0x34]))   # and after
+
+    # ---- what is refused -----------------------------------------------
+
+    def test_using_a_constant_before_assigning_it(self):
+        """The one place this deliberately differs from 64tass.
+
+        64tass takes as many passes as it needs, so it can size "lda foo"
+        once it has seen "foo = $12" further down. A single pass cannot:
+        it would have to guess a width for every forward reference in
+        every program, since any of them might turn out to be a constant
+        in the zero page, and that would put the guessing and widening
+        machinery into programs that have no need of it.
+
+        Refusing it costs nothing real. The assembler this replaces
+        cannot do it either -- it reserves three bytes for an undefined
+        symbol and then stops with "value of an identifier has changed"
+        when the second pass wants two.
+        """
+        for source in (" lda foo\nfoo = $12\n",
+                       " lda foo\nfoo = $1234\n",
+                       " jmp foo\nfoo = $1234\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, 0x26, source)   # XAP_EFORWARD
+
+        # And 64tass really does accept all three, so the divergence is
+        # this test and not a misreading of the oracle.
+        for source in (" lda foo\nfoo = $12\n",
+                       " lda foo\nfoo = $1234\n",
+                       " jmp foo\nfoo = $1234\n"):
+            self.assertIsNotNone(TestLabels.tass(self, source, ORIGIN), source)
+
+    def test_assigning_twice(self):
+        for source in ("foo = $12\nfoo = $34\n",
+                       "foo = $12\nfoo: nop\n",
+                       "foo: nop\nfoo = $12\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, E_REDEF, source)
+
+    def test_nothing_may_follow_an_assignment(self):
+        """A label can share its line with an instruction; this cannot."""
+        for source in ("foo = $12 nop\n", "foo = $12 $34\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, 0x01, source)    # XAP_ESYNTAX
+
+    def test_a_missing_or_malformed_value(self):
+        for source in ("foo =\n", "foo = \n", "foo = $\n", "foo = %\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, 0x09, source)    # XAP_EEXPR
+
+    def test_the_value_may_not_be_a_name(self):
+        """Not yet, and it has to say so rather than do something odd.
+
+        xapNumber would read one, because it hands a name to
+        xapLabelOperand -- which reads it into XAP_LABEL, the one label
+        buffer, over the top of the name being assigned. So "foo = bar"
+        would quietly define bar. Names on the right arrive with
+        expressions, where there is something to do with them.
+        """
+        for source in ("foo = bar\n",
+                       "foo = bar\nbar: nop\n",
+                       "bar: nop\nfoo = bar\n",
+                       "foo = _k\n",
+                       "foo = @k\n"):
+            with self.assertRaises(Error, msg=source) as e:
+                self.xap.assemble(source)
+            self.assertEqual(e.exception.code, 0x09, source)    # XAP_EEXPR

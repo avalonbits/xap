@@ -49,10 +49,13 @@ _xslUnknown:
         ; its size is settled without knowing its value -- which is every
         ; ordinary program, and keeps the guessing machinery out of them.
         ;
-        ; This holds while every label is a code address. Assignments will
-        ; break it, since "foo = $12" can name a value below the program
-        ; counter, and then this has to ask whether the symbol could be an
-        ; assignment rather than where the program counter is.
+        ; This holds while every forward reference is to a code address,
+        ; and assignments are the thing that could break it: "foo = $12"
+        ; names a value below the program counter. That is exactly why
+        ; using an assignment before making it is refused rather than
+        ; supported -- see xapSymAssign. Allowing it would mean guessing
+        ; on every forward reference in every program, to buy a case the
+        ; assembler this replaces cannot do either.
         lda     xapPC+1
         bne     _xslWiden
 
