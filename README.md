@@ -8,22 +8,32 @@ project so that it can stand in for it.
 
 ## What works now
 
-Instructions, and nothing else. There are no labels, no symbolic constants, no
-directives and no macros — every operand is a literal whose value is known the
-moment it is read. What it does do is encode **every one of the W65C02S's 212
-opcodes**, checked byte for byte against 64tass on every test run.
+**Every one of the W65C02S's 212 opcodes**, checked byte for byte against
+64tass on every test run, plus comments, labels and named constants:
+
+- labels, global and local, used before or after they are defined
+- `name = value`, a constant that must be made before it is used
+- every addressing mode, with the width chosen from the value
+
+No directives and no macros yet, and no arithmetic — the value of a constant
+is a literal, not an expression.
 
 ```
 $ make test
 ```
 
-Single pass, and each source byte is read exactly once. With no forward
-references there is nothing that could yet force a second look; the shape is
-the point. The reader only moves forward, bytes are emitted as soon as the
-instruction is understood, and nothing is buffered for a later pass to
-revisit. When labels arrive they add a patch list, not a second read.
+Single pass, and each source byte is read exactly once. A forward reference
+leaves a hole and records what has to go in it; the definition fills every
+hole that was waiting. Nothing is read twice, and nothing waits for a second
+pass to find out how long an instruction is: where a value could still change
+the width, the narrow form is emitted on the chance it fits and the image
+shifts if it does not.
 
-At the moment that is 1.1KB of code and 1.4KB of tables. A ROM bank is 16KB.
+The object goes to banked RAM — eight 8K banks, which is the largest object a
+65C02 program can be — so the flat 64K holds the code, a 4K source window and
+the symbol and fixup heaps.
+
+At the moment that is 8.4KB. A ROM bank is 16KB.
 
 ## Building
 

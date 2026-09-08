@@ -356,7 +356,54 @@ _xsfFull:
 ;   every hole that was waiting for it. CC on success.
 ; -----------------------------------------------------------------------
 
+; -----------------------------------------------------------------------
+;   Gives the name in XAP_LABEL the value in xapValue, as an assignment
+;   rather than a label: a number that happens to have a name, not a
+;   place in the code. So it does not move when a widening shifts the
+;   image, which is what XAP_SYM_ADDRESS is for and why _xwMoveLabels
+;   has always tested it.
+;
+;   An assignment that something has already referred to is an error.
+;   Everything about how a forward reference is sized rests on a label
+;   defined later being at or above the program counter -- that is what
+;   lets xapSelect settle "lda fwd" as absolute the moment it reads it,
+;   and keeps the guessing and widening machinery out of ordinary
+;   programs. A name that turns out to be an assignment could be
+;   anything, zero page included, so allowing it would mean guessing on
+;   every forward reference in every program.
+;
+;   The assembler this replaces cannot do it either. It evaluates an
+;   undefined symbol to $EEEE on its first pass, so it reserves three
+;   bytes; on the second the value is known, a zero page one assembles
+;   to two, everything after it shifts and it stops with "value of an
+;   identifier has changed". Refusing it outright says so earlier and
+;   more clearly.
+; -----------------------------------------------------------------------
+
+xapSymAssign:
+        lda     #XAP_SYM_DEFINED
+        bra     xapSymDefined
+
+; -----------------------------------------------------------------------
+;   Defines the name in XAP_LABEL as a label: the address it stands at,
+;   which does move when the image shifts.
+; -----------------------------------------------------------------------
+
 xapSymDefine:
+        lda     #XAP_SYM_DEFINED|XAP_SYM_ADDRESS
+
+; -----------------------------------------------------------------------
+;   Both of the above, which differ only in what they set and in whether
+;   a reference already waiting is allowed.
+;
+;   One routine rather than two because 64tass scopes an underscore name
+;   between global labels, so anything two entry points share has to be
+;   a global itself -- and a handful of globals in the middle of this
+;   would also split it across the hotspot profile.
+; -----------------------------------------------------------------------
+
+xapSymDefined:
+        sta     xapDefFlags
         jsr     xapSymFind
         bcc     _xsdExisting
         lda     xapSym              ; a full heap comes back as a null
@@ -371,6 +418,17 @@ _xsdExisting:
         lda     (xapSym),y
         bmi     _xsdTwice
 
+        ; An assignment something has already referred to is a use before
+        ; the assignment was made. A label is free to have references
+        ; waiting on it -- that is the whole point of them.
+        bit     xapDefFlags
+        bvs     _xsdSet
+        ldy     #XAP_SYM_FIXUP
+        lda     (xapSym),y
+        iny
+        ora     (xapSym),y
+        bne     _xsdUsed
+
 _xsdSet:
         ldy     #XAP_SYM_VALUE
         lda     xapValue
@@ -379,7 +437,7 @@ _xsdSet:
         lda     xapValue+1
         sta     (xapSym),y
         ldy     #XAP_SYM_FLAGS
-        lda     #XAP_SYM_DEFINED|XAP_SYM_ADDRESS
+        lda     xapDefFlags
         sta     (xapSym),y
 
         lda     xapLocal            ; counted in its own scope
@@ -408,6 +466,11 @@ _xsdFailed:
 
 _xsdTwice:
         lda     #XAP_EREDEF
+        sec
+        rts
+
+_xsdUsed:
+        lda     #XAP_EFORWARD
         sec
         rts
 
@@ -687,6 +750,15 @@ xapLabelHere:
         jsr     xapReadLabel
         bcs     _xlhExit
 
+        ; "name = value" names a number rather than a place. Look past
+        ; any space for the equals, because "foo = 1" and "foo=1" are the
+        ; same thing, and put the cursor back if it is not there.
+        sty     xapLabelPos
+        .skipspace
+        cmp     #'='
+        beq     _xlhAssign
+        ldy     xapLabelPos
+
         lda     (xapSrc),y          ; the colon is optional
         cmp     #':'
         bne     +
@@ -709,6 +781,65 @@ _xlhScope:
         jsr     xapSymDefine        ; the line still has to be read
         ldy     xapLabelPos
 _xlhExit:
+        rts
+
+; -----------------------------------------------------------------------
+;   "name = value", where value is a number.
+;
+;   A name on the right hand side is not read yet. Naming one number
+;   after another wants arithmetic to be worth much -- "screen + 40" and
+;   the like -- so it waits for expressions, and until then the only
+;   thing that can follow the equals is a literal.
+;
+;   An assignment does not end the local scope the way a label does.
+;   64tass has the same rule, and it is the useful one: a table of
+;   constants in the middle of a routine should not throw away the
+;   routine's local labels.
+; -----------------------------------------------------------------------
+
+_xlhAssign:
+        iny                         ; past the equals
+        .skipspace
+
+        ; A literal, and only a literal. xapNumber would happily read a
+        ; name here -- it hands one to xapLabelOperand -- but that reads
+        ; it into XAP_LABEL, which is the one buffer, and so over the top
+        ; of the name being assigned: "foo = bar" would define bar. There
+        ; is nowhere to put the second name and nothing useful to do with
+        ; it if there were, since without arithmetic "foo = bar" only
+        ; renames bar, and a name whose value is another symbol that has
+        ; not been defined yet needs the symbol to wait on a symbol.
+        ; Both arrive with expressions.
+        tax
+        lda     xapLetter,x
+        bne     _xlhNotLiteral
+        cpx     #'_'
+        beq     _xlhNotLiteral
+        cpx     #'@'
+        bne     _xlhLiteral
+_xlhNotLiteral:
+        lda     #XAP_EEXPR
+        sec
+        rts
+
+_xlhLiteral:
+        jsr     xapNumber
+        bcs     _xlhExit
+
+        ; Nothing may follow it. A label can share its line with an
+        ; instruction and an assignment cannot, so this is the place to
+        ; say so rather than letting the rest of the line be assembled.
+        .skipspace
+        .atend                      ; nonzero means it really is the end
+        bne     _xlhAssignEnd
+        lda     #XAP_ESYNTAX
+        sec
+        rts
+
+_xlhAssignEnd:
+        sty     xapLabelPos
+        jsr     xapSymAssign
+        ldy     xapLabelPos
         rts
 
 ; -----------------------------------------------------------------------
